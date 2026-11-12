@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# secrets - the Google OAuth client file holds your client secret
+client_secret*.json
+*secret*.json
+arduino_secrets.h
+
+# backups / build output
+*.bak
+build/
