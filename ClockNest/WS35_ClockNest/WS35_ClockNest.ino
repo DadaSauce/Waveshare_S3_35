@@ -35,7 +35,8 @@
                (three beeps at the new level), alarm sound (tap its name:
                an MP3 / AAC / FLAC / WAV / OGG on the SD card, or the beep)
     Display    brightness on battery (10% steps; always full on USB), sleep
-               time on battery, keep Wi-Fi / Bluetooth on while asleep
+               time on battery, keep Wi-Fi / Bluetooth on while asleep,
+               wake on tap / move
     Weather    ZIP code
     Wi-Fi      on/off, scan, pick a network, on-screen keyboard
     Bluetooth  on/off, pairing PIN; a paired phone (BLE terminal app) can
@@ -48,7 +49,8 @@
   page is open it returns to the clock face first.
 
   BATTERY: PWR held 6 s = off, one press = on. On battery the screen fades
-  out after the sleep time; touch fades it back in.
+  out after the sleep time; a touch - or a tap, move or shake (motion
+  sensor, can be switched off in Display) - fades it back in.
 
   TIME: NTP at power-up and every 24 h (Wi-Fi stays connected for the Nest
   and weather); the RTC keeps time through power cuts. US Pacific + DST.
@@ -349,6 +351,8 @@ const char* SLEEP_LABELS[] = { "Never", "15 s", "30 s", "1 min", "2 min", "5 min
 const int N_SLEEP = 7;
 int  sleepIdx = 3;                       // 1 min
 bool keepWifiAsleep = true, keepBtAsleep = false;
+bool wakeOnMotion = true;                // tap / move / shake wakes the screen (Display page)
+float motRefX = 0, motRefY = 0, motRefZ = 0;   // which way gravity pointed when it fell asleep
 bool sleeping = false, sleptWifi = false, sleptBt = false;
 
 const char* TZ_INFO = "PST8PDT,M3.2.0,M11.1.0";   // US Pacific with DST
@@ -393,7 +397,7 @@ enum { B_NONE = 0, B_DONE, B_TH_UP, B_TH_DN, B_TM_UP, B_TM_DN, B_SET,
        B_TILE_WX, B_K0, B_K1, B_K2, B_K3, B_K4, B_K5, B_K6, B_K7, B_K8, B_K9, B_KDEL, B_KOK,
        B_TILE_WIFI, B_TILE_BT, B_TOGGLE, B_W_UP, B_W_DN, B_W_SCAN, B_KB_SHOW,
        B_BT_NEWPIN, B_BT_FORGET, B_BT_DISC,
-       B_TILE_DISP, B_D_BLDN, B_D_BLUP, B_D_SLPDN, B_D_SLPUP, B_D_KWIFI, B_D_KBT };
+       B_TILE_DISP, B_D_BLDN, B_D_BLUP, B_D_SLPDN, B_D_SLPUP, B_D_KWIFI, B_D_KBT, B_D_KMOT };
 // settings grid: 2 columns x 3 rows of tiles; add new pages here
 const int TILE_W = 140, TILE_H = 116;
 const int TILE_X[2] = { 15, 165 };
@@ -3567,6 +3571,7 @@ const Btn DISPBTNS[] = {
   { B_D_BLDN, 22, 94, 60, 52 },  { B_D_BLUP, 238, 94, 60, 52 },
   { B_D_SLPDN, 22, 200, 60, 52 }, { B_D_SLPUP, 238, 200, 60, 52 },
   { B_D_KWIFI, 214, 296, 84, 40 }, { B_D_KBT, 214, 348, 84, 40 },
+  { B_D_KMOT, 214, 406, 84, 40 },
 };
 const int NDISPB = sizeof(DISPBTNS) / sizeof(DISPBTNS[0]);
 
@@ -3659,6 +3664,11 @@ void renderDispPage() {
   frame.drawString("Keep Bluetooth on", 22, 368);
   drawSmallToggle(B_D_KWIFI, keepWifiAsleep);
   drawSmallToggle(B_D_KBT, keepBtAsleep);
+  frame.setFont(&fonts::DejaVu18);
+  frame.setTextColor(TFT_WHITE);
+  frame.setTextDatum(middle_left);
+  frame.drawString("Wake on tap / move", 22, 426);
+  drawSmallToggle(B_D_KMOT, wakeOnMotion);
 
   // power source
   frame.setFont(&fonts::DejaVu12);
@@ -3668,8 +3678,7 @@ void renderDispPage() {
   String pw = !batPresent ? String("No battery - on USB, never sleeps")
             : usbIn ? "Battery " + String(b) + (batCharging ? ", charging" : "") + " - on USB, no sleep"
             : "Battery " + String(b) + ", " + String(batMv / 1000.0, 2) + " V - on battery";
-  frame.drawString(pw, 160, 420);
-  frame.drawString("Asleep: screen fades out. Touch to wake.", 160, 446);
+  frame.drawString(pw, 160, 464);
   if (alarmRinging) drawRinging();
   frame.pushSprite(0, 0);
 }
@@ -3688,6 +3697,7 @@ void pressDisp(int id) {
     case B_D_SLPUP: if (sleepIdx < N_SLEEP - 1) sleepIdx++; prefs.putInt("sleepI", sleepIdx); break;
     case B_D_KWIFI: keepWifiAsleep = !keepWifiAsleep; prefs.putBool("slpWifi", keepWifiAsleep); break;
     case B_D_KBT: keepBtAsleep = !keepBtAsleep; prefs.putBool("slpBt", keepBtAsleep); break;
+    case B_D_KMOT: wakeOnMotion = !wakeOnMotion; prefs.putBool("wakeMov", wakeOnMotion); break;
   }
   if (id == B_D_BLDN || id == B_D_BLUP) {  // show the battery level for 2 s (saved on release)
     lcd.setBrightness(pctToPwm(blPct));
@@ -3734,10 +3744,12 @@ void updateClock(bool force);
 
 // goSleep(): Battery sleep: back to the clock face, fade the backlight out, and switch
 //   off Wi-Fi / Bluetooth unless set to stay on. Drawing stops while asleep.
+bool imuRead();
 void goSleep() {
   if (screen != SCREEN_FACE) closeSettings();
   fadeBacklight(backlight, 0, 700);
   sleeping = true;
+  if (imuOk && imuRead()) { motRefX = accX; motRefY = accY; motRefZ = accZ; }   // "still" position
   sleptWifi = sleptBt = false;
   if (wifiOn && !keepWifiAsleep) { WiFi.disconnect(true); WiFi.mode(WIFI_OFF); sleptWifi = true; }
   if (btOn && !keepBtAsleep) { bleStop(); sleptBt = true; }
@@ -4025,7 +4037,7 @@ bool imuInit() {
   i2cWrite(IMU_ADDR, 0x60, 0xB0);        // soft reset
   delay(20);
   i2cWrite(IMU_ADDR, 0x02, 0x40);        // CTRL1: register auto-increment, little endian
-  i2cWrite(IMU_ADDR, 0x03, 0x07);        // CTRL2: accel +-2 g, ~62 Hz
+  i2cWrite(IMU_ADDR, 0x03, 0x05);        // CTRL2: accel +-2 g, 250 Hz (fast enough to catch a tap)
   i2cWrite(IMU_ADDR, 0x08, 0x01);        // CTRL7: accelerometer on
   return true;
 }
@@ -4302,6 +4314,7 @@ void setup() {
   sleepIdx    = constrain(prefs.getInt("sleepI", 3), 0, N_SLEEP - 1);
   keepWifiAsleep = prefs.getBool("slpWifi", true);
   keepBtAsleep   = prefs.getBool("slpBt", false);
+  wakeOnMotion   = prefs.getBool("wakeMov", true);
   alarmH      = prefs.getInt("alH", 7);
   alarmM      = prefs.getInt("alM", 0);
   alarmOn     = prefs.getBool("alOn", false);
@@ -4473,8 +4486,28 @@ void loop() {
     lcd.setBrightness(backlight);          // back to the level for this power source
   }
   if (sleeping) {
-    if (down || alarmRinging || !onBattery) { wakeUp(); swallowTouch = tnow; }
-    else { delay(30); return; }          // dark: nothing to draw
+    // tap / move / shake: sample the accelerometer every 5 ms while dark.
+    //   tap or shake = a sudden jump between two samples (> 0.15 g, summed
+    //   over x, y, z); move / pick up = drifted from the position it fell
+    //   asleep in (> 0.2 g, about a 12 deg tilt).
+    bool moved = false;
+    if (wakeOnMotion && imuOk) {
+      for (int i = 0; i < 6 && !moved; i++) {
+        float px = accX, py = accY, pz = accZ;
+        if (imuRead()) {
+          float jump  = fabsf(accX - px) + fabsf(accY - py) + fabsf(accZ - pz);
+          float drift = fabsf(accX - motRefX) + fabsf(accY - motRefY) + fabsf(accZ - motRefZ);
+          if (jump > 0.15f || drift > 0.20f) moved = true;
+        }
+        if (!moved) delay(5);
+      }
+    } else delay(30);
+    if (down || alarmRinging || !onBattery || moved) {
+      if (moved) Serial.println("Wake: motion");
+      wakeUp();
+      swallowTouch = tnow;
+    }
+    else return;                         // dark: nothing to draw
   }
   if (swallowTouch) {                    // the touch that woke it does nothing else
     if (!tnow) swallowTouch = false;
