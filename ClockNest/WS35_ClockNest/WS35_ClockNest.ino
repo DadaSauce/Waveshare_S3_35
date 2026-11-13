@@ -50,7 +50,9 @@
 
   BATTERY: PWR held 6 s = off, one press = on. On battery the screen fades
   out after the sleep time; a touch - or a tap, move or shake (motion
-  sensor, can be switched off in Display) - fades it back in.
+  sensor, can be switched off in Display) - fades it back in. While dark
+  the display controller sleeps and the processor drops to 80 MHz; the
+  `power` command shows time asleep and what woke it.
 
   TIME: NTP at power-up and every 24 h (Wi-Fi stays connected for the Nest
   and weather); the RTC keeps time through power cuts. US Pacific + DST.
@@ -82,6 +84,7 @@
     demo                              show the hour change now
     city <ZIP or name> / loc <lat>,<lon> / wx    weather place / status
     sd [path]                         card info + list a folder
+    power                             time asleep, wake count by reason, battery
     orient [flip|swap|off|on]         turning behaviour
     nest project|client|secret|token <value>   Nest credentials (saved)
     nest status | nest clear | nest poll
@@ -353,6 +356,9 @@ int  sleepIdx = 3;                       // 1 min
 bool keepWifiAsleep = true, keepBtAsleep = false;
 bool wakeOnMotion = true;                // tap / move / shake wakes the screen (Display page)
 float motRefX = 0, motRefY = 0, motRefZ = 0;   // which way gravity pointed when it fell asleep
+// power statistics since boot (command: power)
+unsigned long statAsleepMs = 0, statSleepStart = 0;
+uint32_t statWakeTouch = 0, statWakeMotion = 0, statWakeAlarm = 0, statWakeUsb = 0;
 bool sleeping = false, sleptWifi = false, sleptBt = false;
 
 const char* TZ_INFO = "PST8PDT,M3.2.0,M11.1.0";   // US Pacific with DST
@@ -1047,7 +1053,7 @@ bool fetchWeather() {
 
 // weatherService(): Called by the network task: runs a pending place/ZIP lookup, then refreshes
 //   the forecast every 15 minutes (or right away when wxSoon is set).
-//   On failure it retries after 2 minutes.
+//   On failure it retries after 2 minutes; after 3 failures in a row it rejoins Wi-Fi.
 void weatherService() {                  // called from the network task
   static unsigned long lastWx = 0;
   if (wxQuery[0]) {
@@ -1060,7 +1066,18 @@ void weatherService() {                  // called from the network task
   if (wxSoon || lastWx == 0 || millis() - lastWx > 15UL * 60UL * 1000UL) {
     wxSoon = false;
     lastWx = millis();
-    if (!fetchWeather()) lastWx = millis() - 13UL * 60UL * 1000UL;   // retry in 2 min
+    static int fails = 0;
+    if (fetchWeather()) fails = 0;
+    else {
+      lastWx = millis() - 13UL * 60UL * 1000UL;   // retry in 2 min
+      // Wi-Fi can report "connected" yet pass no traffic (seen after power-up).
+      // Three failures in a row (~6 min): drop the link and join again.
+      if (++fails >= 3) {
+        fails = 0;
+        Serial.println("Weather keeps failing: rejoining Wi-Fi");
+        WiFi.reconnect();
+      }
+    }
   }
 }
 
@@ -3753,13 +3770,25 @@ void goSleep() {
   sleptWifi = sleptBt = false;
   if (wifiOn && !keepWifiAsleep) { WiFi.disconnect(true); WiFi.mode(WIFI_OFF); sleptWifi = true; }
   if (btOn && !keepBtAsleep) { bleStop(); sleptBt = true; }
+  // save power while dark: display controller into its sleep mode, and the
+  // processor down from 240 to 80 MHz (Wi-Fi, SPI, I2C, I2S and USB all
+  // still work at 80; the loop just has less to do)
+  lcd.sleep();
   Serial.println("Sleep");
+  Serial.flush();
+  setCpuFrequencyMhz(80);
+  statSleepStart = millis();
 }
 
 // wakeUp(): Wake: draw the current face while still dark, fade in, and switch the radios
 //   back on if sleep switched them off.
 void wakeUp() {
+  setCpuFrequencyMhz(240);               // full speed again
+  statAsleepMs += millis() - statSleepStart;
   sleeping = false;
+  lcd.wakeup();                          // display controller out of sleep mode
+  lcd.setBrightness(0);                  //   (keep it dark until the fade)
+  delay(120);                            //   the panel needs 120 ms after waking
   shownHour = -1;
   updateClock(true);                     // draw the current face while still dark
   backlight = targetBacklight();         // the power source may have changed
@@ -4245,6 +4274,14 @@ void handleCommand(String in) {
                   alarmFile.length() ? alarmFile.c_str() : "beep", alarmMusic ? "on" : "off",
                   player ? (player->isRunning() ? "running" : "idle") : "not created",
                   (unsigned long)musicChunks, (unsigned long)musicBytes, audioOk ? "ok" : "NOT running");
+  } else if (lower == "power") {
+    unsigned long up = millis(), asleep = statAsleepMs + (sleeping ? millis() - statSleepStart : 0);
+    Out.printf("Since power-up: %lu min, asleep %lu min (%d%%)\n", up / 60000, asleep / 60000,
+               up ? (int)(asleep * 100 / up) : 0);
+    Out.printf("Wakes: touch %lu, tap/move %lu, alarm %lu, USB %lu\n", (unsigned long)statWakeTouch,
+               (unsigned long)statWakeMotion, (unsigned long)statWakeAlarm, (unsigned long)statWakeUsb);
+    if (batPresent) Out.printf("Battery %d%%, %.2f V, %s\n", batPct, batMv / 1000.0,
+                               batCharging ? "charging" : usbIn ? "on USB" : "on battery");
   } else if (lower == "status") {
     struct tm t;
     if (nowLocal(t)) { char b[40]; strftime(b, sizeof(b), "%a %Y-%m-%d %H:%M:%S %Z", &t); Out.println(String("Time: ") + b); }
@@ -4284,7 +4321,7 @@ void handleCommand(String in) {
     demoStart = millis();
     updateClock(true);
   } else {
-    Out.println("ssid | pass | wifi | bt | sync | status | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
+    Out.println("ssid | pass | wifi | bt | sync | status | power | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
   }
 }
 
@@ -4450,7 +4487,11 @@ void loop() {
     c.trim();
     if (c.length()) { Serial.println("BLE> " + (c.startsWith("pass ") || c.startsWith("nest secret") || c.startsWith("nest token") ? c.substring(0, 5) + "..." : c)); handleCommand(c); }
   }
-  // ---- 7. background jobs: Wi-Fi scan results, motion sensor, battery
+  // ---- 7. background jobs: Wi-Fi (re)connected, scan results, motion sensor, battery
+  static bool wasConnected = false;      // Wi-Fi just came up: fetch weather + Nest now
+  bool isConnected = WiFi.status() == WL_CONNECTED;
+  if (isConnected && !wasConnected) { wxSoon = true; nestPollSoon = true; Serial.println("Wi-Fi up: refreshing weather and Nest"); }
+  wasConnected = isConnected;
   bool wasScanning = wifiScanning;
   wifiScanPoll();
   if (wasScanning && !wifiScanning && screen == SCREEN_WIFI) renderWifiPage();
@@ -4503,7 +4544,10 @@ void loop() {
       }
     } else delay(30);
     if (down || alarmRinging || !onBattery || moved) {
-      if (moved) Serial.println("Wake: motion");
+      if (alarmRinging) statWakeAlarm++;
+      else if (!onBattery) statWakeUsb++;
+      else if (down) statWakeTouch++;
+      else { statWakeMotion++; Serial.println("Wake: motion"); }
       wakeUp();
       swallowTouch = tnow;
     }
