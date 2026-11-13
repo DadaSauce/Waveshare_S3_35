@@ -85,6 +85,7 @@
     city <ZIP or name> / loc <lat>,<lon> / wx    weather place / status
     sd [path]                         card info + list a folder
     power                             time asleep, wake count by reason, battery
+    charge [200-1000]                 battery charge current in mA (default 400)
     orient [flip|swap|off|on]         turning behaviour
     nest project|client|secret|token <value>   Nest credentials (saved)
     nest status | nest clear | nest poll
@@ -1322,11 +1323,36 @@ void drawBell(int x, int y, uint16_t c) {
 // jump a little when USB is plugged in or unplugged.
 bool batPresent = false, batCharging = false, usbIn = false;
 int  batPct = -1, batMv = 0;
+int  chargeMa = 400;                     // charge current, 200-1000 mA (command: charge)
+                                         //   400 = about 0.5C for the 850 mAh cell
+
+// Charge current lives in the low 5 bits of register 0x62:
+//   code 8 = 200 mA, then +100 mA per step up to code 16 = 1000 mA.
+// chargeCode(): mA (200-1000, 100 mA steps) to the register code.
+uint8_t chargeCode(int ma) { return 8 + (ma - 200) / 100; }
+// chargeMaFromCode(): register code back to mA (codes below 8 are 25 mA steps).
+int chargeMaFromCode(uint8_t c) { return c <= 8 ? c * 25 : 200 + (c - 8) * 100; }
 
 // pmuSetBit(): Sets one bit of an AXP2101 register, only writing if it isn't set already.
 void pmuSetBit(uint8_t reg, uint8_t bit) {
   uint8_t v;
   if (i2cRead(PMU_ADDR, reg, &v, 1) == 1 && !(v & (1 << bit))) i2cWrite(PMU_ADDR, reg, v | (1 << bit));
+}
+
+// chargeApply(): Writes chargeMa into the AXP2101 charge-current register (0x62),
+//   keeping the register's upper 3 bits as they are.
+void chargeApply() {
+  uint8_t v;
+  if (i2cRead(PMU_ADDR, 0x62, &v, 1) != 1) return;
+  uint8_t nv = (v & 0xE0) | chargeCode(chargeMa);
+  if (nv != v) i2cWrite(PMU_ADDR, 0x62, nv);
+}
+
+// chargeReadMa(): The charge current the chip is actually set to, in mA (-1 = no answer).
+int chargeReadMa() {
+  uint8_t v;
+  if (i2cRead(PMU_ADDR, 0x62, &v, 1) != 1) return -1;
+  return chargeMaFromCode(v & 0x1F);
 }
 
 // batteryInit(): Enables what the battery readout needs in the AXP2101: battery detection,
@@ -1335,6 +1361,7 @@ void batteryInit() {
   pmuSetBit(0x68, 0);                    // battery detection on
   pmuSetBit(0x30, 0);                    // battery voltage measurement on
   pmuSetBit(0x18, 3);                    // fuel gauge on
+  chargeApply();                         // saved charge current (charge command, default 400 mA)
 }
 
 // batteryRead(): Reads battery present / USB present / charging, the voltage and the charge %
@@ -4293,7 +4320,18 @@ void handleCommand(String in) {
     if (batPresent) Out.printf("Battery: %d%%, %.2f V, %s\n", batPct, batMv / 1000.0,
                                   batCharging ? "charging" : (usbIn ? "on USB, not charging" : "on battery"));
     else Out.println(String("Battery: none") + (usbIn ? " (on USB)" : ""));
+    Out.printf("Charge current: %d mA\n", chargeReadMa());
     Out.println(String("Nest: ") + (nestConfigured() ? "set up (nest status for details)" : "not set up"));
+  } else if (lower == "charge" || lower.startsWith("charge ")) {
+    String a = lower.substring(6); a.trim();
+    if (a.length()) {
+      int ma = a.toInt();
+      if (ma < 200 || ma > 1000) { Out.println("charge: 200-1000 mA (100 mA steps)"); return; }
+      chargeMa = (ma + 50) / 100 * 100;   // nearest 100 mA
+      prefs.putInt("chgMa", chargeMa);
+      chargeApply();
+    }
+    Out.printf("Charge current %d mA (chip reports %d mA)\n", chargeMa, chargeReadMa());
   } else if (lower == "12h" || lower == "24h") {
     hour12 = (lower == "12h");
     prefs.putBool("h12", hour12);
@@ -4321,7 +4359,7 @@ void handleCommand(String in) {
     demoStart = millis();
     updateClock(true);
   } else {
-    Out.println("ssid | pass | wifi | bt | sync | status | power | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
+    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
   }
 }
 
@@ -4349,6 +4387,7 @@ void setup() {
   else if (prefs.isKey("bl")) blPct = (prefs.getInt("bl", 204) * 100 / 255 + 5) / 10 * 10;   // old setting
   blPct = constrain(blPct, 10, 100);
   sleepIdx    = constrain(prefs.getInt("sleepI", 3), 0, N_SLEEP - 1);
+  chargeMa    = constrain(prefs.getInt("chgMa", 400), 200, 1000);
   keepWifiAsleep = prefs.getBool("slpWifi", true);
   keepBtAsleep   = prefs.getBool("slpBt", false);
   wakeOnMotion   = prefs.getBool("wakeMov", true);
