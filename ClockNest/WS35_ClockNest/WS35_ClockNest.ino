@@ -24,7 +24,7 @@
 
   TURN IT (motion sensor)
     upright / upside down   the face above (picture turned to read correctly)
-    turned 90 deg left      the clock alone, large
+    turned 90 deg left      the clock alone, large, with Wi-Fi, BT, battery
     turned 90 deg right     full-screen weather: now + 7 days
     (Serial: orient | orient flip | orient swap | orient off | orient on)
 
@@ -1403,9 +1403,10 @@ void drawBolt(int x, int y, uint16_t c) {        // 10 x 16, top-left at x,y
 
 // drawBattery(): Top-right battery icon: outline + nub, filled to the charge level
 //   (red < 10%, yellow < 35%, green above), bolt to the left while charging.
-void drawBattery() {
+//   bx = left edge of the body (274 upright, W - 46 sideways).
+void drawBattery(int bx) {
   if (!batPresent) return;
-  const int bx = 274, by = 13, bw = 34, bh = 18;   // body; nub on the right
+  const int by = 13, bw = 34, bh = 18;   // body; nub on the right
   frame.drawRoundRect(bx, by, bw, bh, 4, C_LABEL);
   frame.drawRoundRect(bx + 1, by + 1, bw - 2, bh - 2, 3, C_LABEL);
   frame.fillRoundRect(bx + bw, by + 5, 3, bh - 10, 1, C_LABEL);
@@ -1472,7 +1473,7 @@ void drawRadioIcons() {
 // drawTopIcons(): Battery (top right) and the pull-down handle (top center).
 //   (The status icons in the top-left corner are drawn by drawRadioIcons.)
 void drawTopIcons() {
-  drawBattery();
+  drawBattery(274);
   frame.fillRoundRect(W / 2 - 22, 3, 44, 4, 2, 0x4208);   // pull-down handle: swipe down for settings
 }
 
@@ -1857,8 +1858,9 @@ void drawDateLandscape(const struct tm& t, bool known) {   // as in WS35_JumpHou
 }
 
 // renderLandscapeClock(): Sideways (turned left): the big clock alone, with
-//   the date and a small bell at the top left when the alarm is on (flashing
-//   while it rings).
+//   the date, Wi-Fi / Bluetooth top left, battery top right, and a small bell
+//   next to the radio icons when the alarm is on (flashing while it rings).
+//   The corners are outside the dial's labels, so nothing overlaps.
 void renderLandscapeClock(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, const struct tm& t) {
   frame.fillScreen(C_BG);
   drawFan();
@@ -1866,8 +1868,10 @@ void renderLandscapeClock(float handDeg, int sec, int hFrom, int hTo, float roll
   drawHand(handDeg);
   drawHourWindow(hFrom, hTo, roll, known);
   drawDateLandscape(t, known);
-  if (alarmRinging) { if (ringBlink()) drawAlarmBell(36, 30, 1.2f, C_HOUR); }   // ringing: flash
-  else if (alarmOn) drawAlarmBell(36, 30, 1.0f, C_HOUR);                     // alarm set
+  drawRadioIcons();                      // same top-left spot as upright
+  drawBattery(W - 46);                   // top right
+  if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }   // ringing: flash
+  else if (alarmOn) drawAlarmBell(90, 24, 1.0f, C_HOUR);                     // alarm set
   frame.pushSprite(0, 0);
 }
 
