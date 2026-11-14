@@ -24,7 +24,7 @@
 
   TURN IT (motion sensor)
     upright / upside down   the face above (picture turned to read correctly)
-    turned 90 deg left      the clock alone, large, with Wi-Fi, BT, battery
+    turned 90 deg left      the clock alone, large, with Wi-Fi, BT, Nest, battery
     turned 90 deg right     full-screen weather: now + 7 days
     (Serial: orient | orient flip | orient swap | orient off | orient on)
 
@@ -1457,8 +1457,60 @@ void drawCross(int cx, int cy, int r) {
   frame.drawWideLine(cx - r, cy + r, cx + r, cy - r, 1.6f, C_BAD);
 }
 
-// drawRadioIcons(): Wi-Fi and Bluetooth status in the top-left corner.
-//   Grey = off, lit = on and connected, red cross = on but not connected
+// drawFlameGlyph(): Flame (heating), about 16 x 22 at sc 1: a round base with a
+//   pointed tip, and a dark inner tongue.
+void drawFlameGlyph(int cx, int cy, float sc, uint16_t c) {
+  auto S = [sc](float v) { return (int)lroundf(v * sc); };
+  frame.fillCircle(cx, cy + S(4), S(7), c);                                       // base
+  frame.fillTriangle(cx - S(7), cy + S(3), cx + S(7), cy + S(3), cx + S(1), cy - S(11), c);   // tip
+  frame.fillCircle(cx, cy + S(6), S(3), C_BG);                                    // inner tongue
+  frame.fillTriangle(cx - S(3), cy + S(5), cx + S(3), cy + S(5), cx, cy - S(1), C_BG);
+}
+
+// drawSnowGlyph(): Snowflake (cooling), about 22 x 22 at sc 1: three crossed bars
+//   with small V tips.
+void drawSnowGlyph(int cx, int cy, float sc, uint16_t c) {
+  float r = 10 * sc, t = max(1.0f, 1.2f * sc);
+  for (int i = 0; i < 3; i++) {
+    float a = i * PI / 3 + PI / 2;
+    float dx = cosf(a) * r, dy = sinf(a) * r;
+    frame.drawWideLine(cx - dx, cy - dy, cx + dx, cy + dy, t, c);
+    for (int e = -1; e <= 1; e += 2) {                       // V tip at both ends
+      float ex = cx + e * dx * 0.7f, ey = cy + e * dy * 0.7f;
+      for (int k = -1; k <= 1; k += 2) {
+        float b = a + k * 0.7f;
+        frame.drawWideLine(ex, ey, ex + e * cosf(b) * r * 0.35f, ey + e * sinf(b) * r * 0.35f, t * 0.8f, c);
+      }
+    }
+  }
+}
+
+// drawNestIcon(): Thermostat status under the Wi-Fi icon (nothing if the Nest
+//   isn't set up):
+//     orange flame      heating right now
+//     blue snowflake    cooling right now
+//     light grey        on (HEAT / COOL / HEAT-COOL) but idle - snowflake in
+//                       COOL mode, flame otherwise
+//     dark grey         thermostat switched OFF
+//     red cross         can't reach the Nest (no data, or the last read failed)
+void drawNestIcon(int cx, int cy) {
+  if (!nestConfigured()) return;
+  NestState n;
+  xSemaphoreTake(nestLock, portMAX_DELAY);
+  n = nest;
+  xSemaphoreGive(nestLock);
+  bool ok = n.valid && !n.error[0];
+  bool heating = ok && !strcmp(n.hvac, "HEATING"), cooling = ok && !strcmp(n.hvac, "COOLING");
+  bool off = !strcmp(n.mode, "OFF");
+  bool snow = cooling || (!heating && !strcmp(n.mode, "COOL"));
+  uint16_t c = heating ? C_HEAT : cooling ? C_COOL : (!ok || off) ? C_RADIO_OFF : C_LABEL;
+  if (snow) drawSnowGlyph(cx, cy, 1.0f, c);
+  else      drawFlameGlyph(cx, cy, 1.0f, c);
+  if (!ok) drawCross(cx, cy + 1, 10);
+}
+
+// drawRadioIcons(): Wi-Fi, Bluetooth and Nest status in the top-left corner.
+//   Wi-Fi / BT: grey = off, lit = on and connected, red cross = on but not connected
 //   (for Bluetooth: no paired phone). The alarm bell is drawn with the date.
 void drawRadioIcons() {
   const int y = 22, wx = 22, bx = 54;                   // top-left corner: Wi-Fi, Bluetooth
@@ -1467,6 +1519,8 @@ void drawRadioIcons() {
   if (wifiOn && !wConn) drawCross(wx, y + 1, 10);
   drawBtGlyph(bx, y, 1.0f, btOn ? C_COOL : C_RADIO_OFF);
   if (btOn && !bleSecure) drawCross(bx, y + 1, 10);
+  drawNestIcon(wx, y + 34);              // thermostat status, under Wi-Fi (a third icon in the
+                                         //   row would hit the dial's "15" label)
 }
 
 
