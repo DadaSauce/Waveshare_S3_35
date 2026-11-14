@@ -86,6 +86,7 @@
     sd [path]                         card info + list a folder
     power                             time asleep, wake count by reason, battery
     charge [200-1000]                 battery charge current in mA (default 400)
+    chargev [4.1|4.2]                 battery charge-to voltage (default 4.2)
     orient [flip|swap|off|on]         turning behaviour
     nest project|client|secret|token <value>   Nest credentials (saved)
     nest status | nest clear | nest poll
@@ -1325,6 +1326,8 @@ bool batPresent = false, batCharging = false, usbIn = false;
 int  batPct = -1, batMv = 0;
 int  chargeMa = 400;                     // charge current, 200-1000 mA (command: charge)
                                          //   400 = about 0.5C for the 850 mAh cell
+int  chargeMv = 4200;                    // charge-to voltage: 4100 or 4200 mV (command: chargev)
+                                         //   4200 = full for a standard LiPo
 
 // Charge current lives in the low 5 bits of register 0x62:
 //   code 8 = 200 mA, then +100 mA per step up to code 16 = 1000 mA.
@@ -1339,13 +1342,28 @@ void pmuSetBit(uint8_t reg, uint8_t bit) {
   if (i2cRead(PMU_ADDR, reg, &v, 1) == 1 && !(v & (1 << bit))) i2cWrite(PMU_ADDR, reg, v | (1 << bit));
 }
 
-// chargeApply(): Writes chargeMa into the AXP2101 charge-current register (0x62),
-//   keeping the register's upper 3 bits as they are.
+// chargeApply(): Writes chargeMa into the AXP2101 charge-current register (0x62) and
+//   chargeMv into the charge-voltage register (0x64), leaving the other bits alone.
 void chargeApply() {
   uint8_t v;
   if (i2cRead(PMU_ADDR, 0x62, &v, 1) != 1) return;
   uint8_t nv = (v & 0xE0) | chargeCode(chargeMa);
   if (nv != v) i2cWrite(PMU_ADDR, 0x62, nv);
+  if (i2cRead(PMU_ADDR, 0x64, &v, 1) != 1) return;   // charge-to voltage
+  nv = (v & 0xF8) | (chargeMv >= 4200 ? 3 : 2);
+  if (nv != v) i2cWrite(PMU_ADDR, 0x64, nv);
+}
+
+// Charge-to voltage lives in the low 3 bits of register 0x64:
+//   1 = 4.00 V, 2 = 4.10 V, 3 = 4.20 V, 4 = 4.35 V, 5 = 4.40 V.
+// Only 4.10 / 4.20 are offered: 4.35 / 4.40 are for LiHV cells and would
+// overcharge a normal LiPo.
+// chargeReadMv(): The charge-to voltage the chip is set to, in mV (-1 = no answer / unknown).
+int chargeReadMv() {
+  static const int mv[] = { -1, 4000, 4100, 4200, 4350, 4400, -1, -1 };
+  uint8_t v;
+  if (i2cRead(PMU_ADDR, 0x64, &v, 1) != 1) return -1;
+  return mv[v & 0x07];
 }
 
 // chargeReadMa(): The charge current the chip is actually set to, in mA (-1 = no answer).
@@ -4320,8 +4338,20 @@ void handleCommand(String in) {
     if (batPresent) Out.printf("Battery: %d%%, %.2f V, %s\n", batPct, batMv / 1000.0,
                                   batCharging ? "charging" : (usbIn ? "on USB, not charging" : "on battery"));
     else Out.println(String("Battery: none") + (usbIn ? " (on USB)" : ""));
-    Out.printf("Charge current: %d mA\n", chargeReadMa());
+    Out.printf("Charge: %d mA to %.2f V\n", chargeReadMa(), chargeReadMv() / 1000.0);
     Out.println(String("Nest: ") + (nestConfigured() ? "set up (nest status for details)" : "not set up"));
+  } else if (lower.startsWith("chargev")) {
+    String a = lower.substring(7); a.trim();
+    if (a.length()) {
+      float v = a.toFloat();
+      if (v > 100) v /= 1000.0f;           // accept 4200 as well as 4.2
+      if (fabsf(v - 4.1f) < 0.02f) chargeMv = 4100;
+      else if (fabsf(v - 4.2f) < 0.02f) chargeMv = 4200;
+      else { Out.println("chargev: 4.1 or 4.2 (V)"); return; }
+      prefs.putInt("chgMv", chargeMv);
+      chargeApply();
+    }
+    Out.printf("Charge to %.2f V (chip reports %.2f V)\n", chargeMv / 1000.0, chargeReadMv() / 1000.0);
   } else if (lower == "charge" || lower.startsWith("charge ")) {
     String a = lower.substring(6); a.trim();
     if (a.length()) {
@@ -4331,7 +4361,8 @@ void handleCommand(String in) {
       prefs.putInt("chgMa", chargeMa);
       chargeApply();
     }
-    Out.printf("Charge current %d mA (chip reports %d mA)\n", chargeMa, chargeReadMa());
+    Out.printf("Charge current %d mA (chip reports %d mA), charge to %.2f V\n", chargeMa, chargeReadMa(),
+               chargeReadMv() / 1000.0);
   } else if (lower == "12h" || lower == "24h") {
     hour12 = (lower == "12h");
     prefs.putBool("h12", hour12);
@@ -4359,7 +4390,7 @@ void handleCommand(String in) {
     demoStart = millis();
     updateClock(true);
   } else {
-    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
+    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
   }
 }
 
@@ -4388,6 +4419,7 @@ void setup() {
   blPct = constrain(blPct, 10, 100);
   sleepIdx    = constrain(prefs.getInt("sleepI", 3), 0, N_SLEEP - 1);
   chargeMa    = constrain(prefs.getInt("chgMa", 400), 200, 1000);
+  chargeMv    = prefs.getInt("chgMv", 4200) >= 4200 ? 4200 : 4100;
   keepWifiAsleep = prefs.getBool("slpWifi", true);
   keepBtAsleep   = prefs.getBool("slpBt", false);
   wakeOnMotion   = prefs.getBool("wakeMov", true);
