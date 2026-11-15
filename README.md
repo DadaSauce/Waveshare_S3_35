@@ -2,7 +2,8 @@
 
 | Folder | What it is |
 | --- | --- |
-| `ClockNest/WS35_ClockNest` | Home hub: jump-hour clock, weather, Google Nest, alarm with SD music, settings menu, sideways layouts |
+| `ClockNest/WS35_ClockNest` | Home hub: 24-hour clock with three faces (jump-hour, analog, digital), weather, Google Nest, alarm with SD music, settings menu, sideways layouts |
+| `ClockNest/WS35_ClockNest/clock_fonts.h` | Anti-aliased DejaVu fonts for the digital face (generated; don't edit by hand) |
 | `ClockNest/Python/nest_auth.py` | Mac helper for the one-time Google (Nest) sign-in |
 | `ClockNest/ClockNest_Setup_Guide.pdf` | Full setup guide |
 | `ClockNest/ESP32-audioI2S-master.zip` | Audio library (Waveshare's copy, v3.3.0) |

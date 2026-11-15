@@ -3,16 +3,21 @@
    Clock + Nest home hub - Waveshare ESP32-S3-Touch-LCD-3.5 (320 x 480)
   =============================================================================
   THE FACE (upright)
-    top half   the clock - three faces, chosen on Settings > Clock (FACE) or
-               with the "face" command:
-               ANALOG a classic dial; DIGITAL big HH:MM + weekday + full
-               date in the Kindle Home Hub's style (clock_fonts.h).
-               JUMP (default) jump-hour retrograde clock: the minute hand sweeps a 116 deg
-               fan 00 -> 60 and snaps back at the top of the hour while the
-               amber hour digits roll; cyan seconds track.
+    top half   the clock, always 24-hour - three faces, chosen on
+               Settings > Clock (FACE) or with the "face" command:
+               JUMP (default) jump-hour retrograde clock: the minute hand
+                 sweeps a 116 deg fan 00 -> 60 and snaps back at the top of
+                 the hour while the amber hour digits roll; cyan seconds track.
+               ANALOG a classic dial: amber hour, white minute and cyan
+                 seconds hands, all moving smoothly.
+               DIGITAL the Kindle Home Hub's style (clock_fonts.h): big amber
+                 HH:MM with cyan seconds, weekday in white, full date in sky
+                 blue. It shows its own date, so the date corners stay empty
+                 and all status icons + the bell sit in one row on top.
     corners    top left: Wi-Fi and Bluetooth status icons
                  (grey = off, lit = on and connected, red cross = on but not
-                 connected / no paired phone)
+                 connected / no paired phone), Nest under Wi-Fi (flame =
+                 heating, snowflake = cooling, grey = idle / off)
                top right: battery - fill shows the charge (red < 10%,
                  yellow < 35%, green), lightning bolt while charging
                top center: a small handle - swipe down here for settings
@@ -28,7 +33,8 @@
 
   TURN IT (motion sensor)
     upright / upside down   the face above (picture turned to read correctly)
-    turned 90 deg left      the clock alone, large, with Wi-Fi, BT, Nest, battery
+    turned 90 deg left      the chosen clock face alone, large, with Wi-Fi, BT,
+                            Nest, battery
     turned 90 deg right     full-screen weather: now + 7 days
     (Serial: orient | orient flip | orient swap | orient off | orient on)
 
@@ -130,6 +136,9 @@
   DRAWING - everything is drawn into 'frame', a full-screen sprite in PSRAM,
   then pushed to the display with DMA (about 30 ms per frame). No flicker.
   The face is redrawn once a second, or right away when something changes.
+  The DIGITAL face uses anti-aliased VLW fonts (clock_fonts.h, loaded with
+  frame.loadFont); their glyphs are unpacked on the stack, so loop() runs
+  with a 16 KB stack (SET_LOOP_TASK_STACK_SIZE, next to setup()).
 
   ORIENTATION - 'orient' (0 upright, 1 sideways weather, 2 sideways clock,
   3 upside down) chooses the frame size, the display rotation and which
@@ -141,7 +150,8 @@
 
   MAP OF THIS FILE (search for the capitalised section names):
     BOARD, COLORS, CLOCK GEOMETRY, SETTINGS / STATE, I2C, AUDIO, TIME HELPERS,
-    NEST, WEATHER, WI-FI + NTP, DRAWING, BATTERY, SIDEWAYS SCREENS, SETTINGS
+    NEST, WEATHER, WI-FI + NTP, DRAWING, BATTERY, ANALOG AND DIGITAL FACES,
+    SIDEWAYS SCREENS, SETTINGS
     SCREEN, BLUETOOTH, SHARED PAGE WIDGETS, BLUETOOTH PAGE, WI-FI PAGE,
     ON-SCREEN KEYBOARD, SD CARD, WEATHER SETTINGS PAGE, ALARM MUSIC, USB DRIVE
     MODE, DISPLAY PAGE, SLEEP / WAKE, NEST PANEL TOUCHES, THE CLOCK,
