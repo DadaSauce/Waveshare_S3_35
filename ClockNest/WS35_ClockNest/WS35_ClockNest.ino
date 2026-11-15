@@ -1961,8 +1961,8 @@ void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
 }
 
 // drawDigitalFace(): The Kindle Home Hub's digital face: big bold 24-hour
-//   HH:MM in white with the seconds beside it (smaller, cyan), a thin amber
-//   rule, the weekday in amber and the date in sky blue - the jump face's
+//   HH:MM in amber with the seconds beside it (smaller, cyan), a thin amber
+//   rule, the weekday in white and the date in sky blue - the jump face's
 //   colours. The weekday is bold; all text is anti-aliased DejaVu Sans
 //   (clock_fonts.h). 'land' picks the sideways sizes. This face shows its own
 //   date, so the corner date isn't drawn with it; all the status icons and
@@ -1991,7 +1991,7 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
   frame.loadFont(land ? VLW_TIME_L : VLW_TIME_P);
   int tw = frame.textWidth("88:88");
   int x0 = cx - (tw + gap + sw) / 2;
-  frame.setTextColor(TFT_WHITE);
+  frame.setTextColor(C_HOUR);             // time: amber
   frame.setTextDatum(baseline_right);    // right-aligned: the digits stay put
   frame.drawString(hm, x0 + tw, base);
   frame.unloadFont();
@@ -2009,7 +2009,7 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
   static const char* DAYS[7] = { "SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY" };
   static const char* MONTHS[12] = { "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY",
                                     "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER" };
-  frame.setTextColor(C_HOUR);             // weekday: amber
+  frame.setTextColor(TFT_WHITE);          // weekday: white
   frame.setTextDatum(baseline_center);
   frame.drawString(known ? DAYS[t.tm_wday] : "---", cx, wdY);
   frame.unloadFont();
