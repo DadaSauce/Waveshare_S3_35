@@ -1961,8 +1961,9 @@ void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
 }
 
 // drawDigitalFace(): The Kindle Home Hub's digital face: big bold 24-hour
-//   HH:MM in white with the seconds beside it (smaller, grey), a thin rule, the weekday in
-//   bold and the full date below - all in anti-aliased DejaVu Sans
+//   HH:MM in white with the seconds beside it (smaller, cyan), a thin amber
+//   rule, the weekday in amber and the date in sky blue - the jump face's
+//   colours. The weekday is bold; all text is anti-aliased DejaVu Sans
 //   (clock_fonts.h). 'land' picks the sideways sizes. This face shows its own
 //   date, so the corner date isn't drawn with it; all the status icons and
 //   the alarm bell sit in one row along the top instead.
@@ -1995,20 +1996,20 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
   frame.drawString(hm, x0 + tw, base);
   frame.unloadFont();
 
-  frame.loadFont(land ? VLW_SEC_L : VLW_SEC_P);  // seconds: smaller, grey, same baseline
-  frame.setTextColor(C_LABEL);
+  frame.loadFont(land ? VLW_SEC_L : VLW_SEC_P);  // seconds: smaller, cyan, same baseline
+  frame.setTextColor(C_SECON);
   frame.setTextDatum(baseline_left);
   frame.drawString(ss, x0 + tw + gap, base);
   frame.unloadFont();
 
   frame.loadFont(land ? VLW_BOLD_L : VLW_BOLD_P);
-  frame.drawFastHLine(cx - ruleH, ruleY, 2 * ruleH, 0x4208);
-  frame.drawFastHLine(cx - ruleH, ruleY + 1, 2 * ruleH, 0x4208);
+  frame.drawFastHLine(cx - ruleH, ruleY, 2 * ruleH, 0x7A60);       // dark amber rule
+  frame.drawFastHLine(cx - ruleH, ruleY + 1, 2 * ruleH, 0x7A60);
 
   static const char* DAYS[7] = { "SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY" };
   static const char* MONTHS[12] = { "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY",
                                     "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER" };
-  frame.setTextColor(TFT_WHITE);
+  frame.setTextColor(C_HOUR);             // weekday: amber
   frame.setTextDatum(baseline_center);
   frame.drawString(known ? DAYS[t.tm_wday] : "---", cx, wdY);
   frame.unloadFont();
@@ -2017,7 +2018,7 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
   char db[32];
   if (known) snprintf(db, sizeof(db), "%s %d, %d", MONTHS[t.tm_mon], t.tm_mday, t.tm_year + 1900);
   else strcpy(db, "-");
-  frame.setTextColor(C_LABEL);
+  frame.setTextColor(C_DATE);             // date: sky blue
   frame.setTextDatum(baseline_center);
   frame.drawString(db, cx, dtY);
   frame.unloadFont();
