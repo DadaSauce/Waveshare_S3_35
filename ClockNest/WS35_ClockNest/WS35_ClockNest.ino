@@ -1970,11 +1970,12 @@ void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
 void drawDigitalFace(bool land, const struct tm& t, bool known) {
   // layout: centre x, time baseline, rule, weekday + date baselines
   const int cx    = W / 2;
-  const int base  = land ? 182 : 150;
-  const int ruleY = land ? 204 : 168;
+  // (the block is centred between the icon row and the bottom edge / panel)
+  const int base  = land ? 166 : 128;
+  const int ruleY = land ? 188 : 146;
   const int ruleH = land ? 170 : 128;    // half length of the rule
-  const int wdY   = land ? 250 : 204;
-  const int dtY   = land ? 290 : 234;
+  const int wdY   = land ? 234 : 182;
+  const int dtY   = land ? 274 : 212;
   const int gap   = land ? 12 : 8;       // between HH:MM and the seconds
 
   char hm[8], ss[4];
