@@ -181,6 +181,12 @@
 #include "google_roots.h"
 #include "weather_roots.h"
 #include "clock_fonts.h"            // smooth fonts for the DIGITAL face
+
+// loop() runs with a 16 KB stack instead of the default 8 KB. The smooth-font
+// renderer (LovyanGFX VLW) unpacks each glyph on the stack: one digit of the
+// big sideways DIGITAL clock is ~7 KB, which overflowed the 8 KB stack and
+// rebooted the board when it was turned to the clock-only position.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 using namespace lgfx::textdatum;        // middle_center, bottom_left, ...
 
 // ============================================================================
