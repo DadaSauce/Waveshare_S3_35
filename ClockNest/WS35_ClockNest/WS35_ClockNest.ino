@@ -3,7 +3,9 @@
    Clock + Nest home hub - Waveshare ESP32-S3-Touch-LCD-3.5 (320 x 480)
   =============================================================================
   THE FACE (upright)
-    top half   jump-hour retrograde clock: the minute hand sweeps a 116 deg
+    top half   the clock - three faces, chosen on Settings > Clock (FACE) or
+               with the "face" command:
+               JUMP (default) jump-hour retrograde clock: the minute hand sweeps a 116 deg
                fan 00 -> 60 and snaps back at the top of the hour while the
                amber hour digits roll; cyan seconds track.
     corners    top left: Wi-Fi and Bluetooth status icons
@@ -31,7 +33,8 @@
   SETTINGS - swipe down from the top edge; the grid slides down over the
   clock. Swipe up (or DONE) to close; < BACK on a page returns to the grid.
   After 20 s without a touch, settings slide away back to the clock.
-    Clock      time + SET, Wi-Fi SYNC, 12H/24H; alarm time, ON/OFF, VOLUME
+    Clock      FACE (jump / analog / digital), time + SET, Wi-Fi SYNC, 12H/24H;
+               alarm time, ON/OFF, VOLUME
                (three beeps at the new level), alarm sound (tap its name:
                an MP3 / AAC / FLAC / WAV / OGG on the SD card, or the beep)
     Display    brightness on battery (10% steps; always full on USB), sleep
@@ -80,6 +83,7 @@
     sync                              NTP time sync now
     status                            time, Wi-Fi, sync, RTC, battery, Nest
     12h / 24h, bl <10-100>            hour style, battery brightness %
+    face [jump|analog|digital]        clock face (no word = next face)
     alarm HH:MM | on | off | test     alarm;  snd = alarm sound status
     demo                              show the hour change now
     city <ZIP or name> / loc <lat>,<lon> / wx    weather place / status
@@ -343,6 +347,11 @@ NimBLECharacteristic* txChar = nullptr;
 volatile bool bleConnected = false, bleSecure = false, bleHasCmd = false;
 String bleInbox;
 bool hour12 = false;
+// clock face: the jump-hour retrograde dial, a classic analog dial, or a big
+// seven-segment digital clock. Same corners (icons, date, bell) on all three.
+const int FACE_JUMP = 0, FACE_ANALOG = 1, FACE_DIGITAL = 2, N_FACES = 3;
+const char* FACE_NAMES[N_FACES] = { "JUMP", "ANALOG", "DIGITAL" };
+int faceStyle = FACE_JUMP;               // saved as "face"
 const unsigned long SETTINGS_IDLE_MS = 20000;   // settings slide away after 20 s without a touch
 bool holdPush = false;                   // draw a frame but don't show it yet (slide animations)
 bool swipeArmed = false;                 // a finger went down where a swipe can start
@@ -405,7 +414,7 @@ enum { B_NONE = 0, B_DONE, B_TH_UP, B_TH_DN, B_TM_UP, B_TM_DN, B_SET,
        B_TILE_WX, B_K0, B_K1, B_K2, B_K3, B_K4, B_K5, B_K6, B_K7, B_K8, B_K9, B_KDEL, B_KOK,
        B_TILE_WIFI, B_TILE_BT, B_TOGGLE, B_W_UP, B_W_DN, B_W_SCAN, B_KB_SHOW,
        B_BT_NEWPIN, B_BT_FORGET, B_BT_DISC,
-       B_TILE_DISP, B_D_BLDN, B_D_BLUP, B_D_SLPDN, B_D_SLPUP, B_D_KWIFI, B_D_KBT, B_D_KMOT };
+       B_TILE_DISP, B_D_BLDN, B_D_BLUP, B_D_SLPDN, B_D_SLPUP, B_D_KWIFI, B_D_KBT, B_D_KMOT, B_FACE };
 // settings grid: 2 columns x 3 rows of tiles; add new pages here
 const int TILE_W = 140, TILE_H = 116;
 const int TILE_X[2] = { 15, 165 };
@@ -421,7 +430,7 @@ const Btn MBTNS[] = {
 };
 const int NMB = sizeof(MBTNS) / sizeof(MBTNS[0]);
 const Btn SBTNS[] = {                   // Clock page (portrait)
-  { B_BACK, 10, 8, 96, 44 },  { B_H12, 214, 8, 96, 44 },
+  { B_BACK, 10, 8, 96, 44 },  { B_FACE, 114, 8, 92, 44 },  { B_H12, 214, 8, 96, 44 },
   { B_TH_UP, 45, 88, 70, 40 },  { B_TH_DN, 45, 196, 70, 40 },
   { B_TM_UP, 135, 88, 70, 40 }, { B_TM_DN, 135, 196, 70, 40 },
   { B_SET, 226, 94, 78, 44 },  { B_WSYNC, 226, 170, 78, 56 },
@@ -1893,6 +1902,107 @@ void drawPanel() {
 }
 
 // ============================================================================
+// ANALOG AND DIGITAL FACES
+// ----------------------------------------------------------------------------
+// The two other clock faces (Settings > Clock > FACE). Each draws at any size
+// from a centre and a scale, so the same code makes the upright face (top
+// half) and the big sideways clock. The corners - status icons, battery,
+// date, alarm bell - are drawn around them exactly as for the jump face.
+// ============================================================================
+
+// facePt(): point at 'deg' (0 = 12 o'clock, clockwise) and radius r from cx, cy.
+void facePt(int cx, int cy, float deg, float r, float& x, float& y) {
+  float a = deg * (PI / 180.0f);
+  x = cx + r * sinf(a);
+  y = cy - r * cosf(a);
+}
+
+// drawFaceHand(): A tapered hand from a short tail behind the centre out to
+//   'len': 'w0' wide at the hub, 'w1' at the tip.
+void drawFaceHand(int cx, int cy, float deg, float len, float tail, float w0, float w1, uint16_t c) {
+  float x0, y0, x1, y1;
+  facePt(cx, cy, deg + 180, tail, x0, y0);
+  facePt(cx, cy, deg, len, x1, y1);
+  frame.drawWedgeLine(x0, y0, x1, y1, w0 / 2, w1 / 2, c);
+}
+
+// drawAnalogFace(): Classic dial of radius r: minute ticks (every 5th long and
+//   white), numerals 1-12, amber hour hand, white minute hand, cyan seconds
+//   hand. All hands move smoothly (the hour hand creeps with the minutes).
+void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
+  float k = r / 104.0f;                  // 1.0 = the upright size
+  frame.drawCircle(cx, cy, r + 2, C_ARC);
+  frame.drawCircle(cx, cy, r + 3, C_ARC);
+  for (int m = 0; m < 60; m++) {
+    float x0, y0, x1, y1;
+    bool five = m % 5 == 0;
+    facePt(cx, cy, m * 6, five ? r - 11 * k : r - 5 * k, x0, y0);
+    facePt(cx, cy, m * 6, r - 1, x1, y1);
+    if (five) frame.drawWideLine(x0, y0, x1, y1, 1.4f * k, C_TICK5);   // (half-width)
+    else      frame.drawLine(x0, y0, x1, y1, C_TICK);
+  }
+  frame.setFont(r > 120 ? &fonts::DejaVu24 : &fonts::DejaVu18);
+  frame.setTextColor(C_LABEL);
+  frame.setTextDatum(middle_center);
+  for (int h = 1; h <= 12; h++) {
+    float x, y;
+    facePt(cx, cy, h * 30, r - 27 * k, x, y);
+    frame.drawNumber(h, (int)x, (int)y + 1);
+  }
+  if (known) {
+    float sec = t.tm_sec, mins = t.tm_min + sec / 60.0f, hr = (t.tm_hour % 12) + mins / 60.0f;
+    drawFaceHand(cx, cy, hr * 30,   r * 0.52f, r * 0.10f, 9 * k, 5 * k, C_HOUR);
+    drawFaceHand(cx, cy, mins * 6,  r * 0.80f, r * 0.12f, 6 * k, 3 * k, C_HAND);
+    drawFaceHand(cx, cy, sec * 6,  r * 0.88f, r * 0.22f, 2.4f * k, 1.4f * k, C_SECON);
+  }
+  frame.fillCircle(cx, cy, (int)(6 * k), C_HOUR);
+  frame.fillCircle(cx, cy, (int)(2.5f * k), C_BG);
+}
+
+// drawDigitalFace(): Big seven-segment HH:MM in amber (Font7), with faint
+//   "88:88" segments behind it like a real LED display; seconds in cyan to
+//   the right, AM / PM above them in 12-hour mode. 'sc' scales Font7
+//   (48 px tall at 1.0).
+void drawDigitalFace(int cx, int cy, float sc, const struct tm& t, bool known) {
+  char hm[8], ghost[8], ss[4];
+  int h = t.tm_hour;
+  if (hour12) { h %= 12; if (h == 0) h = 12; }
+  if (known) snprintf(hm, sizeof(hm), hour12 ? "%d:%02d" : "%02d:%02d", h, t.tm_min);
+  else strcpy(hm, "--:--");
+  strcpy(ghost, (hour12 && known && h < 10) ? "8:88" : "88:88");
+  snprintf(ss, sizeof(ss), "%02d", known ? t.tm_sec : 0);
+
+  frame.setFont(&fonts::Font7);
+  frame.setTextSize(sc * 0.42f);         // seconds: smaller
+  int sw = frame.textWidth("88");
+  frame.setTextSize(sc);
+  int tw = frame.textWidth("88:88");     // keep the time where it is whatever the digits
+  int gap = (int)(8 * sc);
+  int x0 = cx - (tw + gap + sw) / 2;     // left edge of the HH:MM block
+  int th = frame.fontHeight();
+
+  frame.setTextDatum(middle_right);      // right-aligned, so 12 h times keep the colon put
+  frame.setTextColor(0x2104);
+  frame.drawString(ghost, x0 + tw, cy);
+  frame.setTextColor(C_HOUR);
+  frame.drawString(hm, x0 + tw, cy);
+
+  frame.setTextSize(sc * 0.42f);
+  frame.setTextDatum(bottom_left);
+  frame.setTextColor(0x2104);
+  frame.drawString("88", x0 + tw + gap, cy + th / 2);
+  if (known) { frame.setTextColor(C_SECON); frame.drawString(ss, x0 + tw + gap, cy + th / 2); }
+  frame.setTextSize(1);
+
+  if (hour12 && known) {                 // AM / PM over the seconds
+    frame.setFont(sc > 2 ? &fonts::DejaVu24 : &fonts::DejaVu18);
+    frame.setTextColor(C_LABEL);
+    frame.setTextDatum(top_left);
+    frame.drawString(t.tm_hour < 12 ? "AM" : "PM", x0 + tw + gap, cy - th / 2);
+  }
+}
+
+// ============================================================================
 // SIDEWAYS SCREENS (480 X 320)
 // ----------------------------------------------------------------------------
 // The two landscape layouts chosen by the motion sensor: turned left = the
@@ -1917,10 +2027,14 @@ void drawDateLandscape(const struct tm& t, bool known) {   // as in WS35_JumpHou
 //   The corners are outside the dial's labels, so nothing overlaps.
 void renderLandscapeClock(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, const struct tm& t) {
   frame.fillScreen(C_BG);
-  drawFan();
-  drawSeconds(known ? sec : -1);
-  drawHand(handDeg);
-  drawHourWindow(hFrom, hTo, roll, known);
+  if (faceStyle == FACE_ANALOG) drawAnalogFace(W / 2, H / 2, 140, t, known);
+  else if (faceStyle == FACE_DIGITAL) drawDigitalFace(W / 2, 132, 2.3f, t, known);
+  else {
+    drawFan();
+    drawSeconds(known ? sec : -1);
+    drawHand(handDeg);
+    drawHourWindow(hFrom, hTo, roll, known);
+  }
   drawDateLandscape(t, known);
   drawRadioIcons();                      // same top-left spot as upright
   drawBattery(W - 46);                   // top right
@@ -2034,11 +2148,19 @@ void render(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, 
   if (orient == 2) { renderLandscapeClock(handDeg, sec, hFrom, hTo, roll, known, t); return; }
   if (orient == 1) { renderLandscapeWeather(t, known); return; }
   frame.fillScreen(C_BG);
-  drawFan();
-  drawSeconds(known ? sec : -1);
-  drawRadioIcons();
-  drawHand(handDeg);
-  drawHourWindow(hFrom, hTo, roll, known);
+  if (faceStyle == FACE_ANALOG) {
+    drawRadioIcons();
+    drawAnalogFace(160, 124, 104, t, known);
+  } else if (faceStyle == FACE_DIGITAL) {
+    drawRadioIcons();
+    drawDigitalFace(160, 118, 1.45f, t, known);
+  } else {
+    drawFan();
+    drawSeconds(known ? sec : -1);
+    drawRadioIcons();
+    drawHand(handDeg);
+    drawHourWindow(hFrom, hTo, roll, known);
+  }
   drawDate(t, known);
   drawTopIcons();
   drawPanel();
@@ -2091,10 +2213,17 @@ void drawFields(int yc, int h, int m, uint16_t c) {
 void renderSettings() {
   frame.fillScreen(C_BG);
   drawSButton(B_BACK, "< BACK", C_DATE, TFT_BLACK);
-  frame.setFont(&fonts::DejaVu24);
-  frame.setTextColor(TFT_WHITE);
-  frame.setTextDatum(middle_center);
-  frame.drawString("Clock", 160, 30);
+  {                                      // FACE: tap for the next clock face (two-line label)
+    const Btn* b = findBtn(SBTNS, NSB, B_FACE);
+    frame.fillRoundRect(b->x, b->y, b->w, b->h, 10, 0x4208);
+    frame.setTextDatum(middle_center);
+    frame.setFont(&fonts::DejaVu12);
+    frame.setTextColor(C_LABEL);
+    frame.drawString("FACE", b->x + b->w / 2, b->y + 12);
+    frame.setFont(&fonts::DejaVu18);
+    frame.setTextColor(C_HOUR);
+    frame.drawString(FACE_NAMES[faceStyle], b->x + b->w / 2, b->y + 31);
+  }
   drawSButton(B_H12, hour12 ? "12H" : "24H", 0x4208, TFT_WHITE);
 
   frame.drawRoundRect(10, 60, 300, 190, 12, C_WINRIM);
@@ -4054,6 +4183,10 @@ void pressSettings(int id) {
       hour12 = !hour12;
       prefs.putBool("h12", hour12);
       break;
+    case B_FACE:                         // next clock face
+      faceStyle = (faceStyle + 1) % N_FACES;
+      prefs.putInt("face", faceStyle);
+      break;
     case B_BACK: saveAlarm(); pressedBtn = B_NONE; openSettings(); return;
   }
   renderSettings();
@@ -4149,7 +4282,8 @@ void updateClock(bool force) {
     return;
   }
   if (!force && t.tm_sec == shownSec) return;
-  if (shownHour >= 0 && t.tm_hour != shownHour && t.tm_min == 0 && !force) hourChange(t, shownHour);
+  if (shownHour >= 0 && t.tm_hour != shownHour && t.tm_min == 0 && !force && faceStyle == FACE_JUMP)
+    hourChange(t, shownHour);           // (the fly-back + roll animation is the jump face's)
   shownHour = t.tm_hour;
   shownSec = t.tm_sec;
   shownHand = handDegFor(t);
@@ -4425,6 +4559,17 @@ void handleCommand(String in) {
     hour12 = (lower == "12h");
     prefs.putBool("h12", hour12);
     updateClock(true);
+  } else if (lower == "face" || lower.startsWith("face ")) {
+    String a = lower.substring(4);
+    a.trim();
+    int f = -1;
+    for (int i = 0; i < N_FACES; i++) { String n = FACE_NAMES[i]; n.toLowerCase(); if (a == n) f = i; }
+    if (a.length() == 0) f = (faceStyle + 1) % N_FACES;
+    if (f < 0) { Out.println("face jump | analog | digital"); return; }
+    faceStyle = f;
+    prefs.putInt("face", faceStyle);
+    Out.printf("Clock face: %s\n", FACE_NAMES[faceStyle]);
+    updateClock(true);
   } else if (lower.startsWith("bl")) {
     blPct = constrain((lower.substring(2).toInt() + 5) / 10 * 10, 10, 100);
     prefs.putInt("blPct", blPct);
@@ -4448,7 +4593,7 @@ void handleCommand(String in) {
     demoStart = millis();
     updateClock(true);
   } else {
-    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | 12h | 24h | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
+    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | 12h | 24h | face | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
   }
 }
 
@@ -4472,6 +4617,7 @@ void setup() {
   wifiSsid    = prefs.getString("ssid", "");
   wifiPass    = prefs.getString("pass", "");
   hour12      = prefs.getBool("h12", false);
+  faceStyle   = constrain(prefs.getInt("face", FACE_JUMP), 0, N_FACES - 1);
   if (prefs.isKey("blPct")) blPct = prefs.getInt("blPct", 80);
   else if (prefs.isKey("bl")) blPct = (prefs.getInt("bl", 204) * 100 / 255 + 5) / 10 * 10;   // old setting
   blPct = constrain(blPct, 10, 100);
