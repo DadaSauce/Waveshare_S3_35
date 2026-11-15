@@ -1524,14 +1524,17 @@ void drawNestIcon(int cx, int cy) {
 // drawRadioIcons(): Wi-Fi, Bluetooth and Nest status in the top-left corner.
 //   Wi-Fi / BT: grey = off, lit = on and connected, red cross = on but not connected
 //   (for Bluetooth: no paired phone). The alarm bell is drawn with the date.
-void drawRadioIcons() {
+//   oneRow = true (digital face): the Nest icon goes in the top row too, right
+//   of Bluetooth, instead of under Wi-Fi.
+void drawRadioIcons(bool oneRow) {
   const int y = 22, wx = 22, bx = 54;                   // top-left corner: Wi-Fi, Bluetooth
   bool wConn = WiFi.status() == WL_CONNECTED;
   drawWifiGlyph(wx, y, 1.0f, wifiOn ? C_DATE : C_RADIO_OFF);
   if (wifiOn && !wConn) drawCross(wx, y + 1, 10);
   drawBtGlyph(bx, y, 1.0f, btOn ? C_COOL : C_RADIO_OFF);
   if (btOn && !bleSecure) drawCross(bx, y + 1, 10);
-  drawNestIcon(wx, y + 34);              // thermostat status, under Wi-Fi (a third icon in the
+  if (oneRow) drawNestIcon(86, y);       // digital face: nothing in the way, all in one row
+  else drawNestIcon(wx, y + 34);         // thermostat status, under Wi-Fi (a third icon in the
                                          //   row would hit the dial's "15" label)
 }
 
@@ -1966,8 +1969,8 @@ void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
 //   white (AM / PM beside it in 12-hour mode), a thin rule, the weekday in
 //   bold and the full date below - all in anti-aliased DejaVu Sans
 //   (clock_fonts.h). 'land' picks the sideways sizes. This face shows its own
-//   date, so the corner date isn't drawn with it (the alarm bell moves next
-//   to the status icons, as on the sideways clock).
+//   date, so the corner date isn't drawn with it; all the status icons and
+//   the alarm bell sit in one row along the top instead.
 void drawDigitalFace(bool land, const struct tm& t, bool known) {
   // layout: centre x, time baseline, rule, weekday + date baselines
   const int cx    = W / 2;
@@ -2025,11 +2028,13 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
   frame.setTextDatum(top_left);
 }
 
-// drawFaceBell(): The alarm bell for faces without the corner date (digital):
-//   next to the status icons, amber when set, flashing while it rings.
+// drawFaceBell(): The alarm bell for the digital face, last in the top row of
+//   icons (after Wi-Fi, Bluetooth and the Nest): grey = off, amber = on,
+//   flashing while it rings - as on the other faces.
 void drawFaceBell() {
-  if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }
-  else if (alarmOn) drawAlarmBell(90, 24, 1.0f, C_HOUR);
+  int bx = nestConfigured() ? 118 : 86;  // (no Nest icon: take its place)
+  if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, 24, 1.2f, C_HOUR); }
+  else drawAlarmBell(bx, 24, 1.0f, alarmOn ? C_HOUR : C_RADIO_OFF);
 }
 
 // ============================================================================
@@ -2066,9 +2071,10 @@ void renderLandscapeClock(float handDeg, int sec, int hFrom, int hTo, float roll
     drawHourWindow(hFrom, hTo, roll, known);
   }
   if (faceStyle != FACE_DIGITAL) drawDateLandscape(t, known);   // (digital shows its own date)
-  drawRadioIcons();                      // same top-left spot as upright
+  drawRadioIcons(faceStyle == FACE_DIGITAL);   // same top-left spot as upright
   drawBattery(W - 46);                   // top right
-  if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }   // ringing: flash
+  if (faceStyle == FACE_DIGITAL) drawFaceBell();                              // last in the icon row
+  else if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }   // ringing: flash
   else if (alarmOn) drawAlarmBell(90, 24, 1.0f, C_HOUR);                     // alarm set
   frame.pushSprite(0, 0);
 }
@@ -2179,16 +2185,16 @@ void render(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, 
   if (orient == 1) { renderLandscapeWeather(t, known); return; }
   frame.fillScreen(C_BG);
   if (faceStyle == FACE_ANALOG) {
-    drawRadioIcons();
+    drawRadioIcons(false);
     drawAnalogFace(160, 124, 104, t, known);
   } else if (faceStyle == FACE_DIGITAL) {
-    drawRadioIcons();
+    drawRadioIcons(true);                // Wi-Fi, BT, Nest, bell: all in the top row
     drawDigitalFace(false, t, known);
     drawFaceBell();
   } else {
     drawFan();
     drawSeconds(known ? sec : -1);
-    drawRadioIcons();
+    drawRadioIcons(false);
     drawHand(handDeg);
     drawHourWindow(hFrom, hTo, roll, known);
   }
