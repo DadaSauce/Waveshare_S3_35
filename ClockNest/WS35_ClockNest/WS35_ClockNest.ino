@@ -5,6 +5,8 @@
   THE FACE (upright)
     top half   the clock - three faces, chosen on Settings > Clock (FACE) or
                with the "face" command:
+               ANALOG a classic dial; DIGITAL big HH:MM + weekday + full
+               date in the Kindle Home Hub's style (clock_fonts.h).
                JUMP (default) jump-hour retrograde clock: the minute hand sweeps a 116 deg
                fan 00 -> 60 and snaps back at the top of the hour while the
                amber hour digits roll; cyan seconds track.
@@ -75,7 +77,7 @@
              Upload Mode: USB-OTG CDC (TinyUSB). Without those it still
              builds; the USB button just explains what to change.
   TABS:      google_roots.h, weather_roots.h (public root certificates
-             for HTTPS - no secrets)
+             for HTTPS - no secrets), clock_fonts.h (digital face fonts)
 
   COMMANDS - Serial Monitor (115200, "Newline") or a paired phone
     ssid <name> / pass <password>     Wi-Fi (saved)
@@ -178,6 +180,7 @@
 #include <algorithm>
 #include "google_roots.h"
 #include "weather_roots.h"
+#include "clock_fonts.h"            // smooth fonts for the DIGITAL face
 using namespace lgfx::textdatum;        // middle_center, bottom_left, ...
 
 // ============================================================================
@@ -1959,47 +1962,74 @@ void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
   frame.fillCircle(cx, cy, (int)(2.5f * k), C_BG);
 }
 
-// drawDigitalFace(): Big seven-segment HH:MM in amber (Font7), with faint
-//   "88:88" segments behind it like a real LED display; seconds in cyan to
-//   the right, AM / PM above them in 12-hour mode. 'sc' scales Font7
-//   (48 px tall at 1.0).
-void drawDigitalFace(int cx, int cy, float sc, const struct tm& t, bool known) {
-  char hm[8], ghost[8], ss[4];
+// drawDigitalFace(): The Kindle Home Hub's digital face: big bold HH:MM in
+//   white (AM / PM beside it in 12-hour mode), a thin rule, the weekday in
+//   bold and the full date below - all in anti-aliased DejaVu Sans
+//   (clock_fonts.h). 'land' picks the sideways sizes. This face shows its own
+//   date, so the corner date isn't drawn with it (the alarm bell moves next
+//   to the status icons, as on the sideways clock).
+void drawDigitalFace(bool land, const struct tm& t, bool known) {
+  // layout: centre x, time baseline, rule, weekday + date baselines
+  const int cx    = W / 2;
+  const int base  = land ? 182 : 150;
+  const int ruleY = land ? 204 : 168;
+  const int ruleH = land ? 170 : 128;    // half length of the rule
+  const int wdY   = land ? 250 : 204;
+  const int dtY   = land ? 290 : 234;
+  const int gap   = land ? 12 : 8;       // between the time and AM / PM
+
+  char hm[8];
   int h = t.tm_hour;
   if (hour12) { h %= 12; if (h == 0) h = 12; }
   if (known) snprintf(hm, sizeof(hm), hour12 ? "%d:%02d" : "%02d:%02d", h, t.tm_min);
   else strcpy(hm, "--:--");
-  strcpy(ghost, (hour12 && known && h < 10) ? "8:88" : "88:88");
-  snprintf(ss, sizeof(ss), "%02d", known ? t.tm_sec : 0);
+  const char* ampm = (hour12 && known) ? (t.tm_hour < 12 ? "AM" : "PM") : nullptr;
 
-  frame.setFont(&fonts::Font7);
-  frame.setTextSize(sc * 0.42f);         // seconds: smaller
-  int sw = frame.textWidth("88");
-  frame.setTextSize(sc);
-  int tw = frame.textWidth("88:88");     // keep the time where it is whatever the digits
-  int gap = (int)(8 * sc);
-  int x0 = cx - (tw + gap + sw) / 2;     // left edge of the HH:MM block
-  int th = frame.fontHeight();
+  // widths first, to centre time + AM/PM together
+  frame.loadFont(land ? VLW_BOLD_L : VLW_BOLD_P);
+  int aw = ampm ? frame.textWidth(ampm) + gap : 0;
+  frame.unloadFont();
+  frame.loadFont(land ? VLW_TIME_L : VLW_TIME_P);
+  int tw = frame.textWidth(hm);
+  int x0 = cx - (tw + aw) / 2;
+  frame.setTextColor(TFT_WHITE);
+  frame.setTextDatum(baseline_left);
+  frame.drawString(hm, x0, base);
+  frame.unloadFont();
 
-  frame.setTextDatum(middle_right);      // right-aligned, so 12 h times keep the colon put
-  frame.setTextColor(0x2104);
-  frame.drawString(ghost, x0 + tw, cy);
-  frame.setTextColor(C_HOUR);
-  frame.drawString(hm, x0 + tw, cy);
-
-  frame.setTextSize(sc * 0.42f);
-  frame.setTextDatum(bottom_left);
-  frame.setTextColor(0x2104);
-  frame.drawString("88", x0 + tw + gap, cy + th / 2);
-  if (known) { frame.setTextColor(C_SECON); frame.drawString(ss, x0 + tw + gap, cy + th / 2); }
-  frame.setTextSize(1);
-
-  if (hour12 && known) {                 // AM / PM over the seconds
-    frame.setFont(sc > 2 ? &fonts::DejaVu24 : &fonts::DejaVu18);
+  frame.loadFont(land ? VLW_BOLD_L : VLW_BOLD_P);
+  if (ampm) {
     frame.setTextColor(C_LABEL);
-    frame.setTextDatum(top_left);
-    frame.drawString(t.tm_hour < 12 ? "AM" : "PM", x0 + tw + gap, cy - th / 2);
+    frame.setTextDatum(baseline_left);
+    frame.drawString(ampm, x0 + tw + gap, base);
   }
+  frame.drawFastHLine(cx - ruleH, ruleY, 2 * ruleH, 0x4208);
+  frame.drawFastHLine(cx - ruleH, ruleY + 1, 2 * ruleH, 0x4208);
+
+  static const char* DAYS[7] = { "SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY" };
+  static const char* MONTHS[12] = { "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY",
+                                    "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER" };
+  frame.setTextColor(TFT_WHITE);
+  frame.setTextDatum(baseline_center);
+  frame.drawString(known ? DAYS[t.tm_wday] : "---", cx, wdY);
+  frame.unloadFont();
+
+  frame.loadFont(land ? VLW_DATE_L : VLW_DATE_P);
+  char db[32];
+  if (known) snprintf(db, sizeof(db), "%s %d, %d", MONTHS[t.tm_mon], t.tm_mday, t.tm_year + 1900);
+  else strcpy(db, "-");
+  frame.setTextColor(C_LABEL);
+  frame.setTextDatum(baseline_center);
+  frame.drawString(db, cx, dtY);
+  frame.unloadFont();
+  frame.setTextDatum(top_left);
+}
+
+// drawFaceBell(): The alarm bell for faces without the corner date (digital):
+//   next to the status icons, amber when set, flashing while it rings.
+void drawFaceBell() {
+  if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }
+  else if (alarmOn) drawAlarmBell(90, 24, 1.0f, C_HOUR);
 }
 
 // ============================================================================
@@ -2028,14 +2058,14 @@ void drawDateLandscape(const struct tm& t, bool known) {   // as in WS35_JumpHou
 void renderLandscapeClock(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, const struct tm& t) {
   frame.fillScreen(C_BG);
   if (faceStyle == FACE_ANALOG) drawAnalogFace(W / 2, H / 2, 140, t, known);
-  else if (faceStyle == FACE_DIGITAL) drawDigitalFace(W / 2, 132, 2.3f, t, known);
+  else if (faceStyle == FACE_DIGITAL) drawDigitalFace(true, t, known);
   else {
     drawFan();
     drawSeconds(known ? sec : -1);
     drawHand(handDeg);
     drawHourWindow(hFrom, hTo, roll, known);
   }
-  drawDateLandscape(t, known);
+  if (faceStyle != FACE_DIGITAL) drawDateLandscape(t, known);   // (digital shows its own date)
   drawRadioIcons();                      // same top-left spot as upright
   drawBattery(W - 46);                   // top right
   if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }   // ringing: flash
@@ -2153,7 +2183,8 @@ void render(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, 
     drawAnalogFace(160, 124, 104, t, known);
   } else if (faceStyle == FACE_DIGITAL) {
     drawRadioIcons();
-    drawDigitalFace(160, 118, 1.45f, t, known);
+    drawDigitalFace(false, t, known);
+    drawFaceBell();
   } else {
     drawFan();
     drawSeconds(known ? sec : -1);
@@ -2161,7 +2192,7 @@ void render(float handDeg, int sec, int hFrom, int hTo, float roll, bool known, 
     drawHand(handDeg);
     drawHourWindow(hFrom, hTo, roll, known);
   }
-  drawDate(t, known);
+  if (faceStyle != FACE_DIGITAL) drawDate(t, known);   // (digital shows its own date)
   drawTopIcons();
   drawPanel();
   if (!holdPush) frame.pushSprite(0, 0);
