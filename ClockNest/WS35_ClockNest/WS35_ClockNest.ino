@@ -35,7 +35,7 @@
   SETTINGS - swipe down from the top edge; the grid slides down over the
   clock. Swipe up (or DONE) to close; < BACK on a page returns to the grid.
   After 20 s without a touch, settings slide away back to the clock.
-    Clock      FACE (jump / analog / digital), time + SET, Wi-Fi SYNC, 12H/24H;
+    Clock      FACE (jump / analog / digital), time + SET, Wi-Fi SYNC;
                alarm time, ON/OFF, VOLUME
                (three beeps at the new level), alarm sound (tap its name:
                an MP3 / AAC / FLAC / WAV / OGG on the SD card, or the beep)
@@ -84,7 +84,7 @@
     wifi on|off, bt on|off, bt        radios; bt = Bluetooth status + PIN
     sync                              NTP time sync now
     status                            time, Wi-Fi, sync, RTC, battery, Nest
-    12h / 24h, bl <10-100>            hour style, battery brightness %
+    bl <10-100>                       battery brightness % (time is always 24-hour)
     face [jump|analog|digital]        clock face (no word = next face)
     alarm HH:MM | on | off | test     alarm;  snd = alarm sound status
     demo                              show the hour change now
@@ -349,7 +349,6 @@ unsigned long wifiJoinStart = 0;         // when the last connect attempt began
 NimBLECharacteristic* txChar = nullptr;
 volatile bool bleConnected = false, bleSecure = false, bleHasCmd = false;
 String bleInbox;
-bool hour12 = false;
 // clock face: the jump-hour retrograde dial, a classic analog dial, or a big
 // seven-segment digital clock. Same corners (icons, date, bell) on all three.
 const int FACE_JUMP = 0, FACE_ANALOG = 1, FACE_DIGITAL = 2, N_FACES = 3;
@@ -412,7 +411,7 @@ long lastAlarmKey = -1;
 enum { B_NONE = 0, B_DONE, B_TH_UP, B_TH_DN, B_TM_UP, B_TM_DN, B_SET,
        B_AH_UP, B_AH_DN, B_AM_UP, B_AM_DN, B_AON, B_TEST, B_SOUND, B_VDN, B_VUP, B_WSYNC,
        B_N_UP, B_N_DN, B_M_HEAT, B_M_COOL, B_M_AUTO, B_M_OFF, B_M_ECO,
-       B_BACK, B_H12, B_TILE_CLOCK, B_TILE_SD,
+       B_BACK, B_TILE_CLOCK, B_TILE_SD,
        B_SD_UP, B_SD_DN, B_SD_REFRESH, B_SD_FORMAT, B_SD_CANCEL, B_SD_YES, B_SD_USB, B_USB_DONE,
        B_TILE_WX, B_K0, B_K1, B_K2, B_K3, B_K4, B_K5, B_K6, B_K7, B_K8, B_K9, B_KDEL, B_KOK,
        B_TILE_WIFI, B_TILE_BT, B_TOGGLE, B_W_UP, B_W_DN, B_W_SCAN, B_KB_SHOW,
@@ -433,7 +432,7 @@ const Btn MBTNS[] = {
 };
 const int NMB = sizeof(MBTNS) / sizeof(MBTNS[0]);
 const Btn SBTNS[] = {                   // Clock page (portrait)
-  { B_BACK, 10, 8, 96, 44 },  { B_FACE, 114, 8, 92, 44 },  { B_H12, 214, 8, 96, 44 },
+  { B_BACK, 10, 8, 96, 44 },  { B_FACE, 214, 8, 96, 44 },
   { B_TH_UP, 45, 88, 70, 40 },  { B_TH_DN, 45, 196, 70, 40 },
   { B_TM_UP, 135, 88, 70, 40 }, { B_TM_DN, 135, 196, 70, 40 },
   { B_SET, 226, 94, 78, 44 },  { B_WSYNC, 226, 170, 78, 56 },
@@ -1198,12 +1197,8 @@ void polar(float deg, float r, int& x, int& y) {
 // minuteToDeg(): Maps minutes 0..60 onto the fan: -58 deg (00) .. +58 deg (60).
 float minuteToDeg(float m) { return -SPAN + m * (2 * SPAN / 60.0f); }
 
-// hourShown(): Hour as displayed: 0-23 in 24h mode, 1-12 in 12h mode.
-int hourShown(int h) {
-  if (!hour12) return h;
-  int v = h % 12;
-  return v == 0 ? 12 : v;
-}
+// hourShown(): Hour as displayed (always 24-hour: 00-23).
+int hourShown(int h) { return h; }
 
 // drawFan(): Draws the retrograde dial: the arc, 61 minute ticks (every 5th long and
 //   white) and the 00 / 15 / 30 / 45 / 60 labels.
@@ -1264,10 +1259,10 @@ void drawHourWindow(int from, int to, float roll, bool known) {
   if (!known) frame.drawString("--", cx, cy);
   else {
     int off = (int)(roll * WIN_H);
-    snprintf(b, sizeof(b), hour12 ? "%d" : "%02d", hourShown(from));
+    snprintf(b, sizeof(b), "%02d", hourShown(from));
     frame.drawString(b, cx, cy - off);
     if (roll > 0) {
-      snprintf(b, sizeof(b), hour12 ? "%d" : "%02d", hourShown(to));
+      snprintf(b, sizeof(b), "%02d", hourShown(to));
       frame.drawString(b, cx, cy - off + WIN_H);
     }
   }
@@ -1965,8 +1960,8 @@ void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
   frame.fillCircle(cx, cy, (int)(2.5f * k), C_BG);
 }
 
-// drawDigitalFace(): The Kindle Home Hub's digital face: big bold HH:MM in
-//   white (AM / PM beside it in 12-hour mode), a thin rule, the weekday in
+// drawDigitalFace(): The Kindle Home Hub's digital face: big bold 24-hour
+//   HH:MM in white with the seconds beside it (smaller, grey), a thin rule, the weekday in
 //   bold and the full date below - all in anti-aliased DejaVu Sans
 //   (clock_fonts.h). 'land' picks the sideways sizes. This face shows its own
 //   date, so the corner date isn't drawn with it; all the status icons and
@@ -1979,33 +1974,34 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
   const int ruleH = land ? 170 : 128;    // half length of the rule
   const int wdY   = land ? 250 : 204;
   const int dtY   = land ? 290 : 234;
-  const int gap   = land ? 12 : 8;       // between the time and AM / PM
+  const int gap   = land ? 12 : 8;       // between HH:MM and the seconds
 
-  char hm[8];
-  int h = t.tm_hour;
-  if (hour12) { h %= 12; if (h == 0) h = 12; }
-  if (known) snprintf(hm, sizeof(hm), hour12 ? "%d:%02d" : "%02d:%02d", h, t.tm_min);
-  else strcpy(hm, "--:--");
-  const char* ampm = (hour12 && known) ? (t.tm_hour < 12 ? "AM" : "PM") : nullptr;
+  char hm[8], ss[4];
+  if (known) {
+    snprintf(hm, sizeof(hm), "%02d:%02d", t.tm_hour, t.tm_min);
+    snprintf(ss, sizeof(ss), "%02d", t.tm_sec);
+  } else { strcpy(hm, "--:--"); strcpy(ss, "--"); }
 
-  // widths first, to centre time + AM/PM together
-  frame.loadFont(land ? VLW_BOLD_L : VLW_BOLD_P);
-  int aw = ampm ? frame.textWidth(ampm) + gap : 0;
+  // widths first, to centre HH:MM + seconds together ("88" keeps it from
+  // shifting as the digits change)
+  frame.loadFont(land ? VLW_SEC_L : VLW_SEC_P);
+  int sw = frame.textWidth("88");
   frame.unloadFont();
   frame.loadFont(land ? VLW_TIME_L : VLW_TIME_P);
-  int tw = frame.textWidth(hm);
-  int x0 = cx - (tw + aw) / 2;
+  int tw = frame.textWidth("88:88");
+  int x0 = cx - (tw + gap + sw) / 2;
   frame.setTextColor(TFT_WHITE);
+  frame.setTextDatum(baseline_right);    // right-aligned: the digits stay put
+  frame.drawString(hm, x0 + tw, base);
+  frame.unloadFont();
+
+  frame.loadFont(land ? VLW_SEC_L : VLW_SEC_P);  // seconds: smaller, grey, same baseline
+  frame.setTextColor(C_LABEL);
   frame.setTextDatum(baseline_left);
-  frame.drawString(hm, x0, base);
+  frame.drawString(ss, x0 + tw + gap, base);
   frame.unloadFont();
 
   frame.loadFont(land ? VLW_BOLD_L : VLW_BOLD_P);
-  if (ampm) {
-    frame.setTextColor(C_LABEL);
-    frame.setTextDatum(baseline_left);
-    frame.drawString(ampm, x0 + tw + gap, base);
-  }
   frame.drawFastHLine(cx - ruleH, ruleY, 2 * ruleH, 0x4208);
   frame.drawFastHLine(cx - ruleH, ruleY + 1, 2 * ruleH, 0x4208);
 
@@ -2096,9 +2092,7 @@ void renderLandscapeWeather(const struct tm& t, bool known) {
   frame.setTextDatum(middle_left);
   frame.drawString(wxHaveLoc ? fitText(wxPlace, 190, false) : String("Weather"), 16, 20);
   if (known) {
-    int h = t.tm_hour;
-    if (hour12) { h %= 12; if (h == 0) h = 12; }
-    snprintf(b, sizeof(b), hour12 ? "%d:%02d" : "%02d:%02d", h, t.tm_min);
+    snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min);
     frame.setFont(&fonts::DejaVu24);
     frame.setTextColor(C_HOUR);
     frame.setTextDatum(middle_right);
@@ -2245,11 +2239,15 @@ void drawFields(int yc, int h, int m, uint16_t c) {
   snprintf(b, sizeof(b), "%02d", m); frame.drawString(b, 170, yc);
 }
 
-// renderSettings(): The Clock settings page: TIME panel (arrows, SET, Wi-Fi SYNC, 12H/24H)
+// renderSettings(): The Clock settings page: FACE, TIME panel (arrows, SET, Wi-Fi SYNC)
 //   and ALARM panel (arrows, ON/OFF, volume, tappable sound name).
 void renderSettings() {
   frame.fillScreen(C_BG);
   drawSButton(B_BACK, "< BACK", C_DATE, TFT_BLACK);
+  frame.setFont(&fonts::DejaVu24);
+  frame.setTextColor(TFT_WHITE);
+  frame.setTextDatum(middle_center);
+  frame.drawString("Clock", 160, 30);
   {                                      // FACE: tap for the next clock face (two-line label)
     const Btn* b = findBtn(SBTNS, NSB, B_FACE);
     frame.fillRoundRect(b->x, b->y, b->w, b->h, 10, 0x4208);
@@ -2261,7 +2259,6 @@ void renderSettings() {
     frame.setTextColor(C_HOUR);
     frame.drawString(FACE_NAMES[faceStyle], b->x + b->w / 2, b->y + 31);
   }
-  drawSButton(B_H12, hour12 ? "12H" : "24H", 0x4208, TFT_WHITE);
 
   frame.drawRoundRect(10, 60, 300, 190, 12, C_WINRIM);
   frame.setFont(&fonts::DejaVu18);
@@ -4216,10 +4213,6 @@ void pressSettings(int id) {
       volChangedAt = millis();           // three beeps once you stop tapping
       break;
     case B_SOUND: pressedBtn = B_NONE; openSoundPicker(); return;
-    case B_H12:
-      hour12 = !hour12;
-      prefs.putBool("h12", hour12);
-      break;
     case B_FACE:                         // next clock face
       faceStyle = (faceStyle + 1) % N_FACES;
       prefs.putInt("face", faceStyle);
@@ -4592,10 +4585,6 @@ void handleCommand(String in) {
     }
     Out.printf("Charge current %d mA (chip reports %d mA), charge to %.2f V\n", chargeMa, chargeReadMa(),
                chargeReadMv() / 1000.0);
-  } else if (lower == "12h" || lower == "24h") {
-    hour12 = (lower == "12h");
-    prefs.putBool("h12", hour12);
-    updateClock(true);
   } else if (lower == "face" || lower.startsWith("face ")) {
     String a = lower.substring(4);
     a.trim();
@@ -4630,7 +4619,7 @@ void handleCommand(String in) {
     demoStart = millis();
     updateClock(true);
   } else {
-    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | 12h | 24h | face | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
+    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | face | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
   }
 }
 
@@ -4653,7 +4642,6 @@ void setup() {
   prefs.begin("clocknest", false);
   wifiSsid    = prefs.getString("ssid", "");
   wifiPass    = prefs.getString("pass", "");
-  hour12      = prefs.getBool("h12", false);
   faceStyle   = constrain(prefs.getInt("face", FACE_JUMP), 0, N_FACES - 1);
   if (prefs.isKey("blPct")) blPct = prefs.getInt("blPct", 80);
   else if (prefs.isKey("bl")) blPct = (prefs.getInt("bl", 204) * 100 / 255 + 5) / 10 * 10;   // old setting
