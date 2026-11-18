@@ -4370,30 +4370,36 @@ void renderSoundPage() {
   frame.setTextColor(pressedBtn == B_C_SND ? C_HOUR : C_DATE);
   frame.drawString(fitText(nm, 200, false) + "  >", 298, 226);
 
-  // quiet hours
-  frame.drawRoundRect(10, 262, 300, 206, 12, C_WINRIM);
+  // quiet hours - greyed out (and not tappable) while the chime is off
+  const uint16_t GREY = 0x4208;
+  bool act = chimeOn;
+  uint16_t lab = act ? C_LABEL : GREY;
+  frame.drawRoundRect(10, 262, 300, 206, 12, act ? C_WINRIM : 0x2945);
   frame.setFont(&fonts::DejaVu18);
-  frame.setTextColor(C_LABEL);
+  frame.setTextColor(lab);
   frame.setTextDatum(middle_left);
   frame.drawString("QUIET HOURS", 22, 288);
-  drawSndToggle(B_Q_ON, quietOn);
+  {
+    const Btn* q = findBtn(SNDBTNS, NSNDB, B_Q_ON);
+    if (act) drawSndToggle(B_Q_ON, quietOn);
+    else drawPageBtn(q->x, q->y, q->w, q->h, B_Q_ON, quietOn ? "ON" : "OFF", 0x2104, GREY, true);
+  }
   frame.setFont(&fonts::DejaVu12);
-  frame.setTextColor(C_LABEL);           // (the toggle left its own text colour set)
+  frame.setTextColor(lab);               // (the toggle left its own text colour set)
   frame.setTextDatum(middle_center);
   frame.drawString("FROM", 80, 318);
   frame.drawString("TO", 240, 318);
-  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QF_UP), true, pressedBtn == B_QF_UP ? C_HOUR : C_LABEL);
-  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QF_DN), false, pressedBtn == B_QF_DN ? C_HOUR : C_LABEL);
-  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QT_UP), true, pressedBtn == B_QT_UP ? C_HOUR : C_LABEL);
-  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QT_DN), false, pressedBtn == B_QT_DN ? C_HOUR : C_LABEL);
+  const int arr[4] = { B_QF_UP, B_QF_DN, B_QT_UP, B_QT_DN };
+  for (int i = 0; i < 4; i++)
+    drawArrowIn(findBtn(SNDBTNS, NSNDB, arr[i]), i % 2 == 0, act && pressedBtn == arr[i] ? C_HOUR : lab);
   char hb[4];
-  uint16_t qc = quietOn ? C_HOUR : 0x8410;
+  uint16_t qc = !act ? GREY : quietOn ? C_HOUR : 0x8410;
   frame.setFont(&fonts::DejaVu40);
   frame.setTextColor(qc);
   snprintf(hb, sizeof(hb), "%02d", quietFrom); frame.drawString(hb, 80, 390);
   snprintf(hb, sizeof(hb), "%02d", quietTo);   frame.drawString(hb, 240, 390);
   frame.setFont(&fonts::DejaVu24);
-  frame.setTextColor(C_LABEL);
+  frame.setTextColor(lab);
   frame.drawString("->", 160, 390);
   frame.setFont(&fonts::DejaVu12);
   if (millis() < savedMsgUntil) {
@@ -4401,10 +4407,11 @@ void renderSoundPage() {
     frame.drawString(savedMsg, 160, 459);
   } else {
     char q[40];
-    if (!quietOn) strcpy(q, "chimes every hour");
+    if (!act) strcpy(q, "chime is off");
+    else if (!quietOn) strcpy(q, "chimes every hour");
     else if (quietFrom == quietTo) strcpy(q, "FROM = TO: no quiet hours");
     else snprintf(q, sizeof(q), "no chime %02d:00 - %02d:59", quietFrom, (quietTo + 23) % 24);
-    frame.setTextColor(C_DIM);
+    frame.setTextColor(act ? C_DIM : GREY);
     frame.drawString(q, 160, 459);
   }
   if (alarmRinging) drawRinging();
@@ -4424,6 +4431,8 @@ void saveSound() {
 
 // pressSound(): Sound page buttons. Arrows move 1 hour; volume - / + move 5%.
 void pressSound(int id) {
+  bool quietCtl = id == B_Q_ON || id == B_QF_UP || id == B_QF_DN || id == B_QT_UP || id == B_QT_DN;
+  if (quietCtl && !chimeOn) { pressedBtn = B_NONE; return; }   // greyed out while the chime is off
   switch (id) {
     case B_BACK: saveSound(); pressedBtn = B_NONE; openSettings(); return;
     case B_C_ON: chimeOn = !chimeOn; prefs.putBool("chOn", chimeOn); break;
