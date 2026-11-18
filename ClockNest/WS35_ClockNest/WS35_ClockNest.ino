@@ -8,8 +8,9 @@
                JUMP (default) jump-hour retrograde clock: the minute hand
                  sweeps a 116 deg fan 00 -> 60 and snaps back at the top of
                  the hour while the amber hour digits roll; cyan seconds track.
-               ANALOG a classic dial: amber hour, white minute and cyan
-                 seconds hands, all moving smoothly.
+               ANALOG the round Desk Pet's analog look: white hour ticks,
+                 grey minute ticks, bold 12 / 3 / 6 / 9, amber hour, white
+                 minute and cyan seconds hands, cyan centre cap.
                DIGITAL the Kindle Home Hub's style (clock_fonts.h): big amber
                  HH:MM with cyan seconds, weekday in white, full date in sky
                  blue. It shows its own date, so the date corners stay empty
@@ -2078,37 +2079,40 @@ void drawFaceHand(int cx, int cy, float deg, float len, float tail, float w0, fl
   frame.drawWedgeLine(x0, y0, x1, y1, w0 / 2, w1 / 2, c);
 }
 
-// drawAnalogFace(): Classic dial of radius r: minute ticks (every 5th long and
-//   white), numerals 1-12, amber hour hand, white minute hand, cyan seconds
-//   hand. All hands move smoothly (the hour hand creeps with the minutes).
+// drawAnalogFace(): The analog face, same look as the round GC9A01 Desk Pet's
+//   analog clock (Gadgets/DeskPet_Round), without its date window (this face
+//   has the date in the corners): 60 ticks - every 5th longer and white, the
+//   rest dark grey - no outer ring, bold 12 / 3 / 6 / 9, amber hour hand,
+//   white minute hand, cyan seconds hand with a long tail, cyan centre cap.
+//   r = the ticks' outer radius; the round design is 113, so k scales it.
 void drawAnalogFace(int cx, int cy, int r, const struct tm& t, bool known) {
-  float k = r / 104.0f;                  // 1.0 = the upright size
-  frame.drawCircle(cx, cy, r + 2, C_ARC);
-  frame.drawCircle(cx, cy, r + 3, C_ARC);
-  for (int m = 0; m < 60; m++) {
+  const uint16_t AMBER = frame.color565(255, 190, 60), CYAN = frame.color565(80, 220, 255),
+                 WHITE = frame.color565(240, 240, 240), DIM = frame.color565(70, 70, 70);
+  float k = r / 113.0f;
+  for (int m = 0; m < 60; m++) {         // ticks: hours bigger and white
     float x0, y0, x1, y1;
-    bool five = m % 5 == 0;
-    facePt(cx, cy, m * 6, five ? r - 11 * k : r - 5 * k, x0, y0);
-    facePt(cx, cy, m * 6, r - 1, x1, y1);
-    if (five) frame.drawWideLine(x0, y0, x1, y1, 1.4f * k, C_TICK5);   // (half-width)
-    else      frame.drawLine(x0, y0, x1, y1, C_TICK);
+    bool big = m % 5 == 0;
+    facePt(cx, cy, m * 6, (big ? 100 : 106) * k, x0, y0);
+    facePt(cx, cy, m * 6, r, x1, y1);
+    frame.drawWideLine(x0, y0, x1, y1, (big ? 2.0f : 1.0f) * k, big ? WHITE : DIM);   // (half-width)
   }
-  frame.setFont(r > 120 ? &fonts::DejaVu24 : &fonts::DejaVu18);
-  frame.setTextColor(C_LABEL);
+  frame.setFont(k > 1.1f ? &fonts::FreeSansBold18pt7b : &fonts::FreeSansBold12pt7b);
+  frame.setTextColor(WHITE);
   frame.setTextDatum(middle_center);
-  for (int h = 1; h <= 12; h++) {
-    float x, y;
-    facePt(cx, cy, h * 30, r - 27 * k, x, y);
-    frame.drawNumber(h, (int)x, (int)y + 1);
-  }
+  int n = (int)lroundf(84 * k);
+  frame.drawString("12", cx, cy - n);
+  frame.drawString("3", cx + n, cy + 1);
+  frame.drawString("6", cx, cy + n + 1);
+  frame.drawString("9", cx - n, cy + 1);
   if (known) {
     float sec = t.tm_sec, mins = t.tm_min + sec / 60.0f, hr = (t.tm_hour % 12) + mins / 60.0f;
-    drawFaceHand(cx, cy, hr * 30,   r * 0.52f, r * 0.10f, 9 * k, 5 * k, C_HOUR);
-    drawFaceHand(cx, cy, mins * 6,  r * 0.80f, r * 0.12f, 6 * k, 3 * k, C_HAND);
-    drawFaceHand(cx, cy, sec * 6,  r * 0.88f, r * 0.22f, 2.4f * k, 1.4f * k, C_SECON);
+    // hands: angle, length, tail behind the centre, width - as on the round display
+    drawFaceHand(cx, cy, hr * 30,  55 * k, 10 * k, 9 * k, 9 * k, AMBER);
+    drawFaceHand(cx, cy, mins * 6, 82 * k, 12 * k, 6 * k, 6 * k, WHITE);
+    drawFaceHand(cx, cy, sec * 6,  96 * k, 22 * k, 2.5f * k, 2.5f * k, CYAN);
   }
-  frame.fillCircle(cx, cy, (int)(6 * k), C_HOUR);
-  frame.fillCircle(cx, cy, (int)(2.5f * k), C_BG);
+  frame.fillSmoothCircle(cx, cy, 7 * k, CYAN);   // the centre cap
+  frame.fillSmoothCircle(cx, cy, 3 * k, C_BG);
 }
 
 // drawDigitalFace(): The Kindle Home Hub's digital face: big bold 24-hour
