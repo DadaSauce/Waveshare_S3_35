@@ -18,6 +18,8 @@
                  (grey = off, lit = on and connected, red cross = on but not
                  connected / no paired phone), Nest under Wi-Fi (flame =
                  heating, snowflake = cooling, grey = idle / off)
+               chime note under Bluetooth (amber = hourly chime on, hollow
+                 grey = quiet hours now, none = chime off)
                top right: battery - fill shows the charge (red < 10%,
                  yellow < 35%, green), lightning bolt while charging
                top center: a small handle - swipe down here for settings
@@ -54,6 +56,14 @@
                send the same commands as the Serial Monitor
     SD Card    info, browse, format (FAT32), USB DRIVE (card appears on the
                computer as a disk)
+    Sound      hourly chime ON/OFF, chime volume (1% steps, separate from the
+               alarm's), TEST, chime sound (tap: a file on the SD card, or
+               the built-in two-note bell); QUIET HOURS ON/OFF, FROM / TO
+               hour (no chime from FROM:00 until TO:00)
+    Radio      placeholder (coming later)
+
+  CHIME: on the hour (hh:00) unless it is in the quiet hours or the alarm
+  rings that minute. Plays once; a tap doesn't stop it (it's short).
 
   ALARM: the bell and the backlight flash and it beeps for 1 minute, or plays the chosen
   file (looping) for up to 5 minutes. Touch anywhere to stop. If a settings
@@ -93,6 +103,7 @@
     bl <10-100>                       battery brightness % (time is always 24-hour)
     face [jump|analog|digital]        clock face (no word = next face)
     alarm HH:MM | on | off | test     alarm;  snd = alarm sound status
+    chime [on|off|test|vol <0-100>|quiet on|off|HH-HH]   hourly chime
     demo                              show the hour change now
     city <ZIP or name> / loc <lat>,<lon> / wx    weather place / status
     sd [path]                         card info + list a folder
@@ -115,7 +126,8 @@
                             The only task that uses I2C and draws on screen.
     nestTask()      core 0  the network task: weather and Nest over HTTPS.
                             Slow requests live here so the screen never stalls.
-    beepTask()      core 0  writes the beep pattern to I2S while ringing.
+    beepTask()      core 0  writes the beep pattern to I2S while ringing,
+                            and the built-in chime bell.
     audio library   own     decodes the alarm MP3 (ESP32-audioI2S).
     NimBLE host     own     Bluetooth; its callbacks only set flags /
                             copy text - loop() acts on them.
@@ -126,7 +138,7 @@
 
   SCREENS - 'screen' says what is showing: the clock face, or one of the
   settings pages (grid, Clock, Display, Weather, Wi-Fi, keyboard, Bluetooth,
-  SD card, USB drive). Each page has a renderXxx() that draws it, a list of
+  SD card, USB drive, Sound). Each page has a renderXxx() that draws it, a list of
   buttons (Btn id/x/y/w/h) and a pressXxx() that handles a tap. loop() reads
   the touch chip, detects a new press ('down'), finds the button with
   hitTest() and calls the page's press function. Settings open with a swipe
@@ -154,7 +166,7 @@
     SIDEWAYS SCREENS, SETTINGS
     SCREEN, BLUETOOTH, SHARED PAGE WIDGETS, BLUETOOTH PAGE, WI-FI PAGE,
     ON-SCREEN KEYBOARD, SD CARD, WEATHER SETTINGS PAGE, ALARM MUSIC, USB DRIVE
-    MODE, DISPLAY PAGE, SLEEP / WAKE, NEST PANEL TOUCHES, THE CLOCK,
+    MODE, DISPLAY PAGE, SOUND PAGE, SLEEP / WAKE, NEST PANEL TOUCHES, THE CLOCK,
     ORIENTATION, COMMANDS, SETUP / LOOP.
   =============================================================================
 */
@@ -400,7 +412,8 @@ int shownHour = -1, shownSec = -1;
 float shownHand = 0;
 
 const int SCREEN_FACE = 0, SCREEN_SETTINGS = 1, SCREEN_MENU = 2, SCREEN_SD = 3, SCREEN_WX = 4,
-          SCREEN_WIFI = 5, SCREEN_KBD = 6, SCREEN_BT = 7, SCREEN_DISP = 8, SCREEN_USB = 9;   // SETTINGS = the Clock page
+          SCREEN_WIFI = 5, SCREEN_KBD = 6, SCREEN_BT = 7, SCREEN_DISP = 8, SCREEN_USB = 9,
+          SCREEN_SOUND = 10;                                                            // SETTINGS = the Clock page
 int screen = SCREEN_FACE;
 unsigned long lastTouchMs = 0;
 int  editH = 0, editM = 0;
@@ -416,6 +429,13 @@ uint16_t savedMsgColor = 0x07E0;
 volatile bool alarmRinging = false;
 unsigned long alarmStartMs = 0, alarmLimitMs = 15000;
 long lastAlarmKey = -1;
+// hourly chime (Settings > Sound) - see the CHIME section
+bool chimeOn = true;                     // "chOn"
+int  chimeVol = 50;                      // "chVol", %, 1% steps (the alarm has its own)
+String chimeFile;                        // "chSnd": a file on the SD card ("" = built-in bell)
+bool quietOn = true;                     // "chQt"
+int  quietFrom = 22, quietTo = 7;        // "chQF" / "chQT": no chime from 22:00 until 07:00
+long lastChimeKey = -1;                  // day * 24 + hour of the last chime (never twice an hour)
 
 // buttons: settings screen + Nest panel
 enum { B_NONE = 0, B_DONE, B_TH_UP, B_TH_DN, B_TM_UP, B_TM_DN, B_SET,
@@ -426,19 +446,19 @@ enum { B_NONE = 0, B_DONE, B_TH_UP, B_TH_DN, B_TM_UP, B_TM_DN, B_SET,
        B_TILE_WX, B_K0, B_K1, B_K2, B_K3, B_K4, B_K5, B_K6, B_K7, B_K8, B_K9, B_KDEL, B_KOK,
        B_TILE_WIFI, B_TILE_BT, B_TOGGLE, B_W_UP, B_W_DN, B_W_SCAN, B_KB_SHOW,
        B_BT_NEWPIN, B_BT_FORGET, B_BT_DISC,
-       B_TILE_DISP, B_D_BLDN, B_D_BLUP, B_D_SLPDN, B_D_SLPUP, B_D_KWIFI, B_D_KBT, B_D_KMOT, B_FACE };
-// settings grid: 2 columns x 3 rows of tiles; add new pages here
-const int TILE_W = 140, TILE_H = 116;
+       B_TILE_DISP, B_D_BLDN, B_D_BLUP, B_D_SLPDN, B_D_SLPUP, B_D_KWIFI, B_D_KBT, B_D_KMOT, B_FACE,
+       B_TILE_SOUND, B_TILE_RADIO, B_C_ON, B_C_VDN, B_C_VUP, B_C_TEST, B_C_SND,
+       B_Q_ON, B_QF_UP, B_QF_DN, B_QT_UP, B_QT_DN };
+// settings grid: 2 columns x 4 rows of tiles; add new pages here
+const int TILE_W = 140, TILE_H = 90;
 const int TILE_X[2] = { 15, 165 };
-const int TILE_Y[3] = { 70, 202, 334 };
+const int TILE_Y[4] = { 62, 160, 258, 356 };
 const Btn MBTNS[] = {
   { B_DONE, 210, 8, 100, 44 },
-  { B_TILE_CLOCK, 15, 70, TILE_W, TILE_H },
-  { B_TILE_SD, 165, 334, TILE_W, TILE_H },
-  { B_TILE_WX, 15, 202, TILE_W, TILE_H },
-  { B_TILE_WIFI, 165, 202, TILE_W, TILE_H },
-  { B_TILE_BT, 15, 334, TILE_W, TILE_H },
-  { B_TILE_DISP, 165, 70, TILE_W, TILE_H },
+  { B_TILE_CLOCK, 15, 62, TILE_W, TILE_H },  { B_TILE_DISP, 165, 62, TILE_W, TILE_H },
+  { B_TILE_WX, 15, 160, TILE_W, TILE_H },    { B_TILE_WIFI, 165, 160, TILE_W, TILE_H },
+  { B_TILE_BT, 15, 258, TILE_W, TILE_H },    { B_TILE_SD, 165, 258, TILE_W, TILE_H },
+  { B_TILE_SOUND, 15, 356, TILE_W, TILE_H }, // (Radio, 165 / 356: placeholder, not a button yet)
 };
 const int NMB = sizeof(MBTNS) / sizeof(MBTNS[0]);
 const Btn SBTNS[] = {                   // Clock page (portrait)
@@ -640,9 +660,59 @@ void playMs(const int16_t* buf, int ms) {
     i2s.write((const uint8_t*)buf, sizeof(toneBuf));
 }
 
+// ---- the built-in chime: a two-note bell, made once in PSRAM ----
+// Two bell notes (E6, then C6 0.55 s later), each a few overtones that die
+// away like a struck bell; 2.6 s, 48 kHz mono. Same sound as the Kindle Home
+// Hub's chime. Built by the beep task the first time it is needed (~0.3 s).
+const int BELL_LEN = SAMPLE_RATE * 26 / 10;
+int16_t* bellPcm = nullptr;
+volatile bool chimeBell = false;         // the beep task is playing the bell (set by startChime)
+volatile bool chimeMusic = false;        // the audio library is playing chimeFile
+
+void makeBell() {
+  float* acc = (float*)ps_malloc(BELL_LEN * sizeof(float));
+  bellPcm = (int16_t*)ps_malloc(BELL_LEN * sizeof(int16_t));
+  if (!acc || !bellPcm) { free(acc); free(bellPcm); bellPcm = nullptr; return; }
+  for (int i = 0; i < BELL_LEN; i++) acc[i] = 0;
+  const float notes[2][2] = { { 0.0f, 1318.5f }, { 0.55f, 1046.5f } };       // start s, pitch Hz
+  const float parts[4][2] = { { 1.0f, 1.0f }, { 2.0f, 0.35f }, { 2.76f, 0.18f }, { 5.4f, 0.06f } };
+  for (int n = 0; n < 2; n++) {
+    int i0 = (int)(notes[n][0] * SAMPLE_RATE);
+    for (int i = i0; i < BELL_LEN; i++) {
+      float t = (float)(i - i0) / SAMPLE_RATE;
+      float env = expf(-t * 2.2f) * fminf(1.0f, t / 0.004f);   // 4 ms attack (no click), slow decay
+      float v = 0;
+      for (int p = 0; p < 4; p++)
+        v += parts[p][1] * expf(-t * parts[p][0] * 0.9f) * sinf(2 * PI * notes[n][1] * parts[p][0] * t);
+      acc[i] += v * env;
+    }
+  }
+  float peak = 0.001f;
+  for (int i = 0; i < BELL_LEN; i++) peak = fmaxf(peak, fabsf(acc[i]));
+  for (int i = 0; i < BELL_LEN; i++) bellPcm[i] = (int16_t)(acc[i] / peak * 0.8f * 32767);
+  free(acc);
+}
+
+// playBell(): writes the bell to I2S (as stereo, 10 ms at a time); stops at
+//   once if the alarm starts or the chime is cancelled.
+void playBell() {
+  if (!bellPcm) makeBell();
+  if (bellPcm) {
+    static int16_t st[SAMPLE_RATE / 100 * 2];
+    const int N = SAMPLE_RATE / 100;
+    for (int i = 0; i + N <= BELL_LEN && chimeBell && !alarmRinging; i += N) {
+      for (int k = 0; k < N; k++) st[2 * k] = st[2 * k + 1] = bellPcm[i + k];
+      i2s.write((const uint8_t*)st, sizeof(st));
+    }
+  }
+  for (int i = 0; i < 4; i++) i2s.write((const uint8_t*)silenceBuf, sizeof(silenceBuf));
+  chimeBell = false;                     // done: loop() switches the amp off
+}
+
 // beep pattern while alarmRinging: 4 short beeps, a pause, repeat
 void beepTask(void*) {
   for (;;) {
+    if (chimeBell && !alarmRinging) { playBell(); continue; }
     if (previewBeeps > 0 && !alarmRinging) {  // volume preview: beep beep beep
       for (int b = 0; b < 3; b++) {
         for (int i = 0; i < 12; i++) i2s.write((const uint8_t*)toneBuf, sizeof(toneBuf));      // 120 ms
@@ -681,7 +751,10 @@ void audioInit() {
 
 // startAlarm(): Starts the ringing state for limitMs milliseconds: amp on, alarmRinging true.
 //   The beep task (or the music player) sees the flag and makes the sound.
+void endChime();
 void startAlarm(unsigned long limitMs) {
+  endChime();                            // the alarm wins over a chime that is still playing
+  setAlarmVolume(alarmVol);
   alarmLimitMs = limitMs;
   alarmStartMs = millis();
   ampOn(true);                           // amp switched from here (I2C stays on one task)
@@ -1526,6 +1599,30 @@ void drawNestIcon(int cx, int cy) {
   if (!ok) drawCross(cx, cy + 1, 10);
 }
 
+// drawNoteGlyph(): Music note (hourly chime), about 18 x 24 at sc 1: a slanted
+//   oval head, a stem and a flag. hollow = outline only (quiet hours now).
+void drawNoteGlyph(int cx, int cy, float sc, uint16_t c, bool hollow) {
+  auto S = [sc](float v) { return lroundf(v * sc); };
+  float t = max(1.5f, 2.2f * sc);
+  int hx = cx - S(2), hy = cy + S(7);                                         // head centre
+  frame.drawWideLine(cx + S(3), cy + S(6), cx + S(3), cy - S(12), t, c);     // stem
+  frame.drawWideLine(cx + S(3), cy - S(12), cx + S(10), cy - S(5), t, c);    // flag
+  frame.drawWideLine(cx + S(10), cy - S(5), cx + S(9), cy + S(1), t, c);
+  if (hollow) {
+    frame.drawEllipse(hx, hy, S(6), S(4), c);
+    frame.drawEllipse(hx, hy, S(6) - 1, S(4) - 1, c);
+  } else frame.fillEllipse(hx, hy, S(6), S(4), c);
+}
+
+bool inQuietHours();
+// drawChimeIcon(): the hourly-chime status icon: amber note = chime on, hollow
+//   grey note = quiet hours right now, nothing = chime off.
+void drawChimeIcon(int cx, int cy) {
+  if (!chimeOn) return;
+  bool q = inQuietHours();
+  drawNoteGlyph(cx, cy, 1.0f, q ? C_DIM : C_HOUR, q);
+}
+
 // drawRadioIcons(): Wi-Fi, Bluetooth and Nest status in the top-left corner.
 //   Wi-Fi / BT: grey = off, lit = on and connected, red cross = on but not connected
 //   (for Bluetooth: no paired phone). The alarm bell is drawn with the date.
@@ -1539,8 +1636,11 @@ void drawRadioIcons(bool oneRow) {
   drawBtGlyph(bx, y, 1.0f, btOn ? C_COOL : C_RADIO_OFF);
   if (btOn && !bleSecure) drawCross(bx, y + 1, 10);
   if (oneRow) drawNestIcon(86, y);       // digital face: nothing in the way, all in one row
-  else drawNestIcon(wx, y + 34);         // thermostat status, under Wi-Fi (a third icon in the
+  else {
+    drawNestIcon(wx, y + 34);            // thermostat status, under Wi-Fi (a third icon in the
                                          //   row would hit the dial's "15" label)
+    drawChimeIcon(bx, y + 34);           // hourly chime, under Bluetooth (the digital face
+  }                                      //   puts it after the alarm bell: drawFaceBell)
 }
 
 
@@ -2043,6 +2143,7 @@ void drawFaceBell() {
   int bx = nestConfigured() ? 118 : 86;  // (no Nest icon: take its place)
   if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, 24, 1.2f, C_HOUR); }
   else drawAlarmBell(bx, 24, 1.0f, alarmOn ? C_HOUR : C_RADIO_OFF);
+  drawChimeIcon(bx + 32, 22);            // the hourly chime's note, last in the row
 }
 
 // ============================================================================
@@ -2860,7 +2961,8 @@ void pressKey(int i) {
 const char* SD_BASE = "/sdcard";
 void openSdPage();
 void openClockPage();
-extern bool sdPick;
+extern bool sdPick, sdPickChime;
+void openSoundPage();
 bool isAudioName(const String& n);
 const int SD_CLK = 11, SD_CMD = 10, SD_D0 = 9;
 sdmmc_card_t* sdCard = nullptr;
@@ -2991,12 +3093,12 @@ String fitText(const String& s, int maxW, bool keepEnd) {
 
 // drawSdIcon(): SD card silhouette with a cut corner and contacts (settings tile).
 void drawSdIcon(int cx, int cy, uint16_t c) {
-  int x = cx - 16, y = cy - 22;          // card 32 x 44 with a cut corner
-  frame.fillRect(x + 10, y, 22, 44, c);
-  frame.fillRect(x, y + 10, 32, 34, c);
-  frame.fillTriangle(x, y + 10, x + 10, y, x + 10, y + 10, c);
+  int x = cx - 14, y = cy - 19;          // card 28 x 38 with a cut corner
+  frame.fillRect(x + 9, y, 19, 38, c);
+  frame.fillRect(x, y + 9, 28, 29, c);
+  frame.fillTriangle(x, y + 9, x + 9, y, x + 9, y + 9, c);
   uint16_t bg = (c == TFT_BLACK) ? C_HOUR : C_PANEL;
-  for (int i = 0; i < 4; i++) frame.fillRect(x + 11 + i * 5, y + 4, 3, 9, bg);
+  for (int i = 0; i < 4; i++) frame.fillRect(x + 10 + i * 4, y + 4, 2, 8, bg);
 }
 
 // drawFolderIcon(): Amber folder icon for the file list.
@@ -3043,7 +3145,7 @@ void renderSd() {
   frame.setFont(&fonts::DejaVu18);
   frame.setTextColor(TFT_WHITE);
   frame.setTextDatum(middle_center);
-  frame.drawString(sdPick ? "Alarm sound" : "SD Card", 160, 30);
+  frame.drawString(sdPick ? (sdPickChime ? "Chime sound" : "Alarm sound") : "SD Card", 160, 30);
   if (!sdPick) drawSdButton(SDBTNS, NSDB, B_SD_USB, "USB", 0x3A6B, TFT_WHITE, sdState != 2);
 
   // card info
@@ -3113,7 +3215,7 @@ void renderSd() {
     }
     const SdEntry& e = sdEntries[idx - (up ? 1 : 0)];
     bool playable = !e.dir && isAudioName(e.name);
-    bool chosen = playable && alarmFile == (sdPath == "/" ? String("") : sdPath) + "/" + e.name;
+    bool chosen = playable && (sdPickChime ? chimeFile : alarmFile) == (sdPath == "/" ? String("") : sdPath) + "/" + e.name;
     if (e.dir) drawFolderIcon(16, cy - 8, C_HOUR);
     else       drawFileIcon(19, cy - 10, sdPick && playable ? C_DATE : C_DIM);
     String size = e.dir ? String(">") : fmtBytes(e.size);
@@ -3139,8 +3241,11 @@ void renderSd() {
   drawSdButton(SDBTNS, NSDB, B_SD_UP, nullptr, C_PANEL, C_LABEL, canUp);
   drawSdButton(SDBTNS, NSDB, B_SD_DN, nullptr, C_PANEL, C_LABEL, canDn);
   drawSdButton(SDBTNS, NSDB, B_SD_REFRESH, "REFRESH", C_PANEL, TFT_WHITE, true);
-  if (sdPick) drawSdButton(SDBTNS, NSDB, B_SD_FORMAT, "BEEP", alarmFile.length() ? C_PANEL : C_OK,
-                           alarmFile.length() ? TFT_WHITE : TFT_BLACK, true);
+  if (sdPick) {                          // back to the built-in sound: BEEP (alarm) / BELL (chime)
+    bool own = (sdPickChime ? chimeFile : alarmFile).length() > 0;
+    drawSdButton(SDBTNS, NSDB, B_SD_FORMAT, sdPickChime ? "BELL" : "BEEP", own ? C_PANEL : C_OK,
+                 own ? TFT_WHITE : TFT_BLACK, true);
+  }
   else drawSdButton(SDBTNS, NSDB, B_SD_FORMAT, "FORMAT", 0x7800, TFT_WHITE, sdState == 1 || sdState == 3);
 
   if (sdConfirm) {
@@ -3241,12 +3346,19 @@ void sdTapRow(int ty) {
     sdLoadDir();
   } else if (sdPick) {
     if (!isAudioName(e.name)) return;
-    alarmFile = (sdPath == "/" ? String("") : sdPath) + "/" + e.name;
-    prefs.putString("alSnd", alarmFile);
+    String f = (sdPath == "/" ? String("") : sdPath) + "/" + e.name;
     sdUnmount();
     sdPick = false;
-    openClockPage();
-    savedMsg = "Alarm sound set"; savedMsgColor = C_OK; savedMsgUntil = millis() + 1500;
+    if (sdPickChime) {
+      chimeFile = f; prefs.putString("chSnd", chimeFile);
+      openSoundPage();
+      savedMsg = "Chime sound set";
+    } else {
+      alarmFile = f; prefs.putString("alSnd", alarmFile);
+      openClockPage();
+      savedMsg = "Alarm sound set";
+    }
+    savedMsgColor = C_OK; savedMsgUntil = millis() + 1500;
   } else {
     sdSel = (sdSel == idx) ? -1 : idx;   // highlight a file
   }
@@ -3368,7 +3480,7 @@ volatile uint32_t musicChunks = 0, musicBytes = 0;
 //   continueI2S = true lets the library finish its own bookkeeping on its
 //   pin-less I2S1 channel, which also paces the decoder.
 void audio_process_i2s(int16_t* outBuff, uint16_t validSamples, bool* continueI2S) {
-  if (alarmMusic && audioOk && validSamples) {
+  if ((alarmMusic || chimeMusic) && audioOk && validSamples) {
     musicBytes += i2s.write((const uint8_t*)outBuff, (size_t)validSamples * 4);
     musicChunks++;
   }
@@ -3426,10 +3538,55 @@ void stopAlarmMusic() {
   musicMountedSd = false;
 }
 
+// startChimeMusic(): Plays chimeFile once for the hourly chime (same player as
+//   the alarm music). false = no card / file / decoder: the caller rings the bell.
+unsigned long chimeMusicStart = 0;
+bool startChimeMusic() {
+  if (chimeFile.length() == 0 || !audioOk || usbDriveOn || alarmMusic) return false;
+  if (!sdMounted) {
+    if (sdMount(false) != ESP_OK) { Serial.println("Chime sound: no card - bell"); return false; }
+    musicMountedSd = true;
+  }
+  struct stat st;
+  if (stat(sdFull(chimeFile).c_str(), &st) != 0) {
+    Serial.println("Chime sound: " + chimeFile + " not found - bell");
+    if (musicMountedSd) { sdUnmount(); musicMountedSd = false; }
+    return false;
+  }
+  if (!player) {
+    player = new Audio(I2S_NUM_1);
+    player->setPinout(255, 255, 255, -1);
+    player->setVolume(21);
+  }
+  chimeMusic = true;
+  chimeMusicStart = millis();
+  if (!player->connecttoFS(cardFs, chimeFile.c_str())) {
+    chimeMusic = false;
+    Serial.println("Chime sound: can't play " + chimeFile + " - bell");
+    if (musicMountedSd) { sdUnmount(); musicMountedSd = false; }
+    return false;
+  }
+  return true;
+}
+
+// stopChimeMusic(): Stops a chime file (finished, or the alarm takes over).
+void stopChimeMusic() {
+  if (!chimeMusic) return;
+  chimeMusic = false;
+  if (player) player->stopSong();
+  if (musicMountedSd && screen != SCREEN_SD) sdUnmount();
+  musicMountedSd = false;
+}
+
 // musicService(): Called every loop(): feeds the decoder from the file (the library needs
 //   loop() calls for that) and restarts the file when it ends, so the alarm
-//   keeps playing until it is stopped.
+//   keeps playing until it is stopped. A chime file plays once.
 void musicService() {                    // loop(): feed the decoder, repeat the file
+  if (chimeMusic && player) {
+    player->loop();
+    if (!player->isRunning() && millis() - chimeMusicStart > 300) stopChimeMusic();   // played to the end
+    return;
+  }
   if (!alarmMusic || !player) return;
   player->loop();                        // reads the file into the decoder's buffer
   if (alarmRinging && !player->isRunning())
@@ -3442,20 +3599,22 @@ void musicService() {                    // loop(): feed the decoder, repeat the
 void closeSettings();
 void ringClockAlarm(bool test) {
   ringLabel = "ALARM";
+  endChime();                            // free the player / I2S for the alarm
   // back to the clock face so the flashing bell is in view (not from USB drive mode)
   if (!test && screen != SCREEN_FACE && screen != SCREEN_USB) closeSettings();
   if (startAlarmMusic()) startAlarm(test ? 10000UL : 5UL * 60UL * 1000UL);
   else startAlarm(test ? 3000UL : 60000UL);            // beep: 1 minute
 }
 
-// SD page in "pick a sound" mode
-bool sdPick = false;
+// SD page in "pick a sound" mode: for the alarm (Clock page) or the chime (Sound page)
+bool sdPick = false, sdPickChime = false;
 void openClockPage();
 
-// openSoundPicker(): Opens the SD page in 'Alarm sound' picker mode (from the Clock page).
-void openSoundPicker() {
+// openSoundPicker(): Opens the SD page in 'Alarm sound' / 'Chime sound' picker mode.
+void openSoundPicker(bool forChime) {
   openSdPage();
   sdPick = true;
+  sdPickChime = forChime;
   renderSd();
 }
 
@@ -3699,39 +3858,56 @@ void pressUsb(int id) {
 void closeSettings();                    // (defined below)
 void renderDispPage();
 void openDispPage();
+void openSoundPage();
+void renderSoundPage();
 void drawBrightGlyph(int cx, int cy, uint16_t c);
 
 // ---- settings grid ----
-void drawClockIcon(int cx, int cy, uint16_t c) {
-  frame.drawCircle(cx, cy, 24, c);
-  frame.drawCircle(cx, cy, 23, c);
-  frame.drawWideLine(cx, cy, cx, cy - 15, 1.5f, c);       // minute hand
-  frame.drawWideLine(cx, cy, cx + 11, cy + 4, 1.5f, c);   // hour hand
+void drawClockIcon(int cx, int cy, uint16_t c) {         // ~40 px
+  frame.drawCircle(cx, cy, 20, c);
+  frame.drawCircle(cx, cy, 19, c);
+  frame.drawWideLine(cx, cy, cx, cy - 13, 1.5f, c);       // minute hand
+  frame.drawWideLine(cx, cy, cx + 9, cy + 3, 1.5f, c);    // hour hand
   frame.fillCircle(cx, cy, 3, C_HOUR);
 }
 
+// drawRadioGlyph(): Old radio (Radio tile): body, speaker grille, dial, antenna.
+void drawRadioGlyph(int cx, int cy, uint16_t c) {        // ~40 x 34
+  frame.drawWideLine(cx - 10, cy - 9, cx + 12, cy - 18, 1.5f, c);   // antenna
+  frame.drawRoundRect(cx - 20, cy - 9, 40, 26, 5, c);
+  frame.drawRoundRect(cx - 19, cy - 8, 38, 24, 4, c);
+  frame.drawCircle(cx - 8, cy + 4, 7, c);                 // speaker
+  frame.drawCircle(cx - 8, cy + 4, 3, c);
+  for (int i = 0; i < 3; i++) frame.drawFastHLine(cx + 4, cy - 2 + i * 5, 11, c);   // dial
+}
+
 // drawTile(): One settings tile (icon, title, subtitle); amber while pressed.
+//   The Radio tile is a placeholder: drawn dim, not a button.
 void drawTile(int col, int row, int id, const char* title, const char* sub) {
   int x = TILE_X[col], y = TILE_Y[row];
   bool pressed = (pressedBtn == id);
+  bool soon = (id == B_TILE_RADIO);
   frame.fillRoundRect(x, y, TILE_W, TILE_H, 14, pressed ? C_HOUR : C_PANEL);
-  uint16_t fg = pressed ? TFT_BLACK : TFT_WHITE;
-  if (id == B_TILE_CLOCK) drawClockIcon(x + TILE_W / 2, y + 40, fg);
-  if (id == B_TILE_SD)    drawSdIcon(x + TILE_W / 2, y + 40, fg);
-  if (id == B_TILE_WX)    drawWxIcon(x + TILE_W / 2, y + 40, 60, 2, true);
-  if (id == B_TILE_WIFI)  drawWifiGlyph(x + TILE_W / 2, y + 40, 1.4f, fg);
-  if (id == B_TILE_BT)    drawBtGlyph(x + TILE_W / 2, y + 40, 1.4f, fg);
-  if (id == B_TILE_DISP)  drawBrightGlyph(x + TILE_W / 2, y + 40, fg);
+  uint16_t fg = pressed ? TFT_BLACK : soon ? 0x4208 : TFT_WHITE;
+  int ix = x + TILE_W / 2, iy = y + 31;  // icon centre
+  if (id == B_TILE_CLOCK) drawClockIcon(ix, iy, fg);
+  if (id == B_TILE_SD)    drawSdIcon(ix, iy, fg);
+  if (id == B_TILE_WX)    drawWxIcon(ix, iy, 52, 2, true);
+  if (id == B_TILE_WIFI)  drawWifiGlyph(ix, iy - 4, 1.3f, fg);
+  if (id == B_TILE_BT)    drawBtGlyph(ix, iy, 1.3f, fg);
+  if (id == B_TILE_DISP)  drawBrightGlyph(ix, iy, fg);
+  if (id == B_TILE_SOUND) drawNoteGlyph(ix - 2, iy - 2, 1.4f, pressed ? TFT_BLACK : C_HOUR, false);
+  if (id == B_TILE_RADIO) drawRadioGlyph(ix, iy, fg);
   frame.setTextDatum(middle_center);
   frame.setFont(&fonts::DejaVu18);
-  frame.setTextColor(fg);
-  frame.drawString(title, x + TILE_W / 2, y + 84);
+  frame.setTextColor(soon ? 0x630C : fg);
+  frame.drawString(title, x + TILE_W / 2, y + 64);
   frame.setFont(&fonts::DejaVu12);
-  frame.setTextColor(pressed ? TFT_BLACK : C_DIM);
-  frame.drawString(sub, x + TILE_W / 2, y + 102);
+  frame.setTextColor(pressed ? TFT_BLACK : soon ? 0x4208 : C_DIM);
+  frame.drawString(sub, x + TILE_W / 2, y + 80);
 }
 
-// renderMenu(): The settings grid: 2 x 3 tiles, DONE, and a handle at the
+// renderMenu(): The settings grid: 2 x 4 tiles, DONE, and a handle at the
 //   bottom (swipe up to close). Respects holdPush for the slide animations.
 void renderMenu() {
   frame.fillScreen(C_BG);
@@ -3747,11 +3923,13 @@ void renderMenu() {
   frame.drawString("DONE", d->x + d->w / 2, d->y + d->h / 2 + 1);
 
   drawTile(0, 0, B_TILE_CLOCK, "Clock", "time - alarm");
-  drawTile(1, 2, B_TILE_SD, "SD Card", "files - format");
+  drawTile(1, 0, B_TILE_DISP, "Display", "light - sleep");
   drawTile(0, 1, B_TILE_WX, "Weather", "ZIP code");
   drawTile(1, 1, B_TILE_WIFI, "Wi-Fi", wifiOn ? (WiFi.status() == WL_CONNECTED ? "connected" : "on") : "off");
   drawTile(0, 2, B_TILE_BT, "Bluetooth", btOn ? (bleSecure ? "phone paired" : "on") : "off");
-  drawTile(1, 0, B_TILE_DISP, "Display", "light - sleep");
+  drawTile(1, 2, B_TILE_SD, "SD Card", "files - format");
+  drawTile(0, 3, B_TILE_SOUND, "Sound", chimeOn ? "chime - quiet" : "chime off");
+  drawTile(1, 3, B_TILE_RADIO, "Radio", "coming soon");
   frame.fillRoundRect(W / 2 - 22, H - 9, 44, 4, 2, 0x4208);  // handle: swipe up to close
   if (alarmRinging) drawRinging();
   if (!holdPush) frame.pushSprite(0, 0);
@@ -3816,6 +3994,7 @@ void renderCurrent() {
   else if (screen == SCREEN_BT) renderBtPage();
   else if (screen == SCREEN_DISP) renderDispPage();
   else if (screen == SCREEN_USB) renderUsbPage();
+  else if (screen == SCREEN_SOUND) renderSoundPage();
 }
 
 // saveAlarm(): Saves alarm time and on/off to flash.
@@ -3850,6 +4029,7 @@ void pressMenu(int id) {
   if (id == B_TILE_WIFI)  { pressedBtn = B_NONE; openWifiPage(); return; }
   if (id == B_TILE_BT)    { pressedBtn = B_NONE; openBtPage(); return; }
   if (id == B_TILE_DISP)  { pressedBtn = B_NONE; openDispPage(); return; }
+  if (id == B_TILE_SOUND) { pressedBtn = B_NONE; openSoundPage(); return; }
   renderMenu();
 }
 
@@ -4016,6 +4196,203 @@ void applyBacklight(bool fade) {
 }
 
 // ============================================================================
+// SOUND PAGE + HOURLY CHIME
+// ----------------------------------------------------------------------------
+// Settings > Sound: the hourly chime (on/off, its own volume, TEST, the sound)
+// and the quiet hours. The chime rings on the hour (hh:00) unless it's in the
+// quiet hours or the alarm rings that same minute. Sound: chimeFile on the SD
+// card if one is chosen (played once by the audio library), otherwise the
+// built-in two-note bell (played by the beep task). The codec volume is set to
+// the chime's level while it plays, then back to the alarm's.
+// ============================================================================
+bool chimeActive = false;                // a chime (or TEST / volume preview) is playing
+unsigned long chimeStartMs = 0;
+unsigned long chimeVolChangedAt = 0;     // volume tapped: play the chime at the new level
+
+// quietHour(): true if hour h is inside the quiet hours (FROM up to, not
+//   including, TO; may wrap past midnight; FROM == TO = no quiet hours).
+bool quietHour(int h) {
+  if (!quietOn || quietFrom == quietTo) return false;
+  return quietFrom < quietTo ? (h >= quietFrom && h < quietTo) : (h >= quietFrom || h < quietTo);
+}
+
+// inQuietHours(): quiet right now? (the face's chime icon goes hollow)
+bool inQuietHours() {
+  struct tm t;
+  return nowLocal(t) && quietHour(t.tm_hour);
+}
+
+// startChime(): Plays the chime once at chimeVol: the SD file if one is set
+//   and playable, else the bell. Nothing while the alarm rings.
+void startChime() {
+  if (!audioOk || alarmRinging || chimeActive || chimeVol == 0) return;
+  previewBeeps = 0;
+  setAlarmVolume(chimeVol);              // (main task: I2C)
+  ampOn(true);
+  chimeActive = true;
+  chimeStartMs = millis();
+  if (!startChimeMusic()) chimeBell = true;   // the beep task plays the bell
+}
+
+// endChime(): Stops the chime (finished, TEST pressed again, or the alarm is
+//   starting), switches the amp off and gives the codec back the alarm volume.
+void endChime() {
+  if (!chimeActive) return;
+  chimeBell = false;                     // the beep task stops within 10 ms
+  stopChimeMusic();
+  chimeActive = false;
+  delay(30);                             // let the last buffer play out
+  if (!alarmRinging && !previewAmpUntil) ampOn(false);
+  setAlarmVolume(alarmVol);
+}
+
+// chimeService(): Called every loop(): rings on the hour, ends a chime that has
+//   played out (20 s at most), and plays the volume preview.
+void chimeService() {
+  struct tm t;
+  if (chimeOn && !demoActive && nowLocal(t) && t.tm_min == 0 && t.tm_sec < 30) {
+    long key = t.tm_yday * 24L + t.tm_hour;
+    if (key != lastChimeKey) {
+      lastChimeKey = key;
+      bool alarmNow = alarmOn && alarmH == t.tm_hour && alarmM == 0;   // the alarm wins
+      if (!quietHour(t.tm_hour) && !alarmNow && !alarmRinging) {
+        Serial.printf("Chime %02d:00\n", t.tm_hour);
+        startChime();
+      }
+    }
+  }
+  if (chimeActive && ((!chimeBell && !chimeMusic) || millis() - chimeStartMs > 20000)) endChime();
+  if (chimeVolChangedAt && millis() - chimeVolChangedAt > 600 && !alarmRinging) {
+    chimeVolChangedAt = 0;
+    endChime();
+    startChime();
+  }
+}
+
+const Btn SNDBTNS[] = {
+  { B_BACK, 10, 8, 96, 44 },
+  { B_C_ON, 222, 66, 76, 40 },
+  { B_C_VDN, 22, 146, 56, 44 }, { B_C_VUP, 158, 146, 56, 44 }, { B_C_TEST, 228, 146, 70, 44 },
+  { B_C_SND, 10, 204, 300, 42 },         // the SOUND row (tap: pick a file)
+  { B_Q_ON, 222, 268, 76, 40 },
+  { B_QF_UP, 45, 326, 70, 36 }, { B_QF_DN, 45, 416, 70, 36 },
+  { B_QT_UP, 205, 326, 70, 36 }, { B_QT_DN, 205, 416, 70, 36 },
+};
+const int NSNDB = sizeof(SNDBTNS) / sizeof(SNDBTNS[0]);
+
+// drawSndToggle(): ON/OFF button on the Sound page.
+void drawSndToggle(int id, bool on) {
+  const Btn* b = findBtn(SNDBTNS, NSNDB, id);
+  drawPageBtn(b->x, b->y, b->w, b->h, id, on ? "ON" : "OFF", on ? C_OK : C_PANEL, on ? TFT_BLACK : TFT_WHITE, true);
+}
+
+// renderSoundPage(): Settings > Sound - HOURLY CHIME panel (ON/OFF, volume - / +,
+//   TEST, sound) and QUIET HOURS panel (ON/OFF, FROM and TO hour with arrows).
+void renderSoundPage() {
+  frame.fillScreen(C_BG);
+  drawPageHeader("Sound", false, false);
+
+  // hourly chime
+  frame.drawRoundRect(10, 60, 300, 190, 12, C_WINRIM);
+  frame.setFont(&fonts::DejaVu18);
+  frame.setTextColor(C_LABEL);
+  frame.setTextDatum(middle_left);
+  frame.drawString("HOURLY CHIME", 22, 86);
+  drawSndToggle(B_C_ON, chimeOn);
+  frame.setFont(&fonts::DejaVu12);
+  frame.drawString("VOLUME", 22, 134);
+  const Btn* b = findBtn(SNDBTNS, NSNDB, B_C_VDN);
+  drawPageBtn(b->x, b->y, b->w, b->h, B_C_VDN, "-", C_PANEL, TFT_WHITE, true);
+  b = findBtn(SNDBTNS, NSNDB, B_C_VUP);
+  drawPageBtn(b->x, b->y, b->w, b->h, B_C_VUP, "+", C_PANEL, TFT_WHITE, true);
+  b = findBtn(SNDBTNS, NSNDB, B_C_TEST);
+  drawPageBtn(b->x, b->y, b->w, b->h, B_C_TEST, chimeActive ? "STOP" : "TEST", chimeActive ? C_HOUR : C_PANEL,
+              chimeActive ? TFT_BLACK : TFT_WHITE, true);
+  char vb[8];
+  snprintf(vb, sizeof(vb), "%d%%", chimeVol);
+  frame.setFont(&fonts::DejaVu24);
+  frame.setTextDatum(middle_center);
+  frame.setTextColor(chimeVol == 0 ? C_BAD : chimeOn ? TFT_WHITE : C_DIM);
+  frame.drawString(chimeVol ? vb : "MUTE", 118, 169);
+  frame.setFont(&fonts::DejaVu12);
+  frame.setTextDatum(middle_left);
+  frame.setTextColor(C_LABEL);
+  frame.drawString("SOUND", 22, 226);
+  String nm = chimeFile.length() ? chimeFile.substring(chimeFile.lastIndexOf('/') + 1) : String("bell (built-in)");
+  frame.setTextDatum(middle_right);
+  frame.setTextColor(pressedBtn == B_C_SND ? C_HOUR : C_DATE);
+  frame.drawString(fitText(nm, 200, false) + "  >", 298, 226);
+
+  // quiet hours
+  frame.drawRoundRect(10, 262, 300, 206, 12, C_WINRIM);
+  frame.setFont(&fonts::DejaVu18);
+  frame.setTextColor(C_LABEL);
+  frame.setTextDatum(middle_left);
+  frame.drawString("QUIET HOURS", 22, 288);
+  drawSndToggle(B_Q_ON, quietOn);
+  frame.setFont(&fonts::DejaVu12);
+  frame.setTextDatum(middle_center);
+  frame.drawString("FROM", 80, 318);
+  frame.drawString("TO", 240, 318);
+  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QF_UP), true, pressedBtn == B_QF_UP ? C_HOUR : C_LABEL);
+  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QF_DN), false, pressedBtn == B_QF_DN ? C_HOUR : C_LABEL);
+  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QT_UP), true, pressedBtn == B_QT_UP ? C_HOUR : C_LABEL);
+  drawArrowIn(findBtn(SNDBTNS, NSNDB, B_QT_DN), false, pressedBtn == B_QT_DN ? C_HOUR : C_LABEL);
+  char hb[4];
+  uint16_t qc = quietOn ? C_HOUR : 0x8410;
+  frame.setFont(&fonts::DejaVu40);
+  frame.setTextColor(qc);
+  snprintf(hb, sizeof(hb), "%02d", quietFrom); frame.drawString(hb, 80, 390);
+  snprintf(hb, sizeof(hb), "%02d", quietTo);   frame.drawString(hb, 240, 390);
+  frame.setFont(&fonts::DejaVu24);
+  frame.setTextColor(C_LABEL);
+  frame.drawString("->", 160, 390);
+  frame.setFont(&fonts::DejaVu12);
+  if (millis() < savedMsgUntil) {
+    frame.setTextColor(savedMsgColor);
+    frame.drawString(savedMsg, 160, 459);
+  } else {
+    char q[40];
+    if (!quietOn) strcpy(q, "chimes every hour");
+    else if (quietFrom == quietTo) strcpy(q, "FROM = TO: no quiet hours");
+    else snprintf(q, sizeof(q), "no chime %02d:00 - %02d:59", quietFrom, (quietTo + 23) % 24);
+    frame.setTextColor(C_DIM);
+    frame.drawString(q, 160, 459);
+  }
+  if (alarmRinging) drawRinging();
+  frame.pushSprite(0, 0);
+}
+
+// openSoundPage(): Shows the Sound page.
+void openSoundPage() { screen = SCREEN_SOUND; lastTouchMs = millis(); renderSoundPage(); }
+
+// saveSound(): Volume and quiet hours are saved when the finger lifts
+//   (not on every auto-repeat step).
+void saveSound() {
+  prefs.putInt("chVol", chimeVol);
+  prefs.putInt("chQF", quietFrom);
+  prefs.putInt("chQT", quietTo);
+}
+
+// pressSound(): Sound page buttons. Every arrow / - + moves one unit (1 hour, 1%).
+void pressSound(int id) {
+  switch (id) {
+    case B_BACK: saveSound(); pressedBtn = B_NONE; openSettings(); return;
+    case B_C_ON: chimeOn = !chimeOn; prefs.putBool("chOn", chimeOn); break;
+    case B_C_VDN: chimeVol = max(0, chimeVol - 1); chimeVolChangedAt = millis(); break;
+    case B_C_VUP: chimeVol = min(100, chimeVol + 1); chimeVolChangedAt = millis(); break;
+    case B_C_TEST: if (chimeActive) endChime(); else startChime(); break;
+    case B_C_SND: saveSound(); endChime(); pressedBtn = B_NONE; openSoundPicker(true); return;
+    case B_Q_ON: quietOn = !quietOn; prefs.putBool("chQt", quietOn); break;
+    case B_QF_UP: quietFrom = (quietFrom + 1) % 24; break;
+    case B_QF_DN: quietFrom = (quietFrom + 23) % 24; break;
+    case B_QT_UP: quietTo = (quietTo + 1) % 24; break;
+    case B_QT_DN: quietTo = (quietTo + 23) % 24; break;
+  }
+  renderSoundPage();
+}
+
+// ============================================================================
 // SLEEP / WAKE WITH A BACKLIGHT FADE
 // ----------------------------------------------------------------------------
 // Sleep is only for battery power: the backlight fades out, drawing stops,
@@ -4140,18 +4517,25 @@ void pressSd(int id) {
   switch (id) {
     case B_BACK:
       sdUnmount(); pressedBtn = B_NONE;
-      if (sdPick) { sdPick = false; openClockPage(); } else openSettings();
+      if (sdPick) { sdPick = false; if (sdPickChime) openSoundPage(); else openClockPage(); } else openSettings();
       return;
     case B_SD_USB: if (sdPick || sdState == 2) break; pressedBtn = B_NONE; openUsbPage(); return;
     case B_SD_UP: sdScroll = max(0, sdScroll - SD_ROWS); break;
     case B_SD_DN: if (sdScroll + SD_ROWS < n) sdScroll += SD_ROWS; break;
     case B_SD_REFRESH: sdRefresh(); break;
     case B_SD_FORMAT:
-      if (sdPick) {                      // "BEEP": back to the built-in beep
-        alarmFile = ""; prefs.putString("alSnd", "");
+      if (sdPick) {                      // "BEEP" / "BELL": back to the built-in sound
         sdUnmount(); sdPick = false; pressedBtn = B_NONE;
-        openClockPage();
-        savedMsg = "Alarm sound: beep"; savedMsgColor = C_OK; savedMsgUntil = millis() + 1500;
+        if (sdPickChime) {
+          chimeFile = ""; prefs.putString("chSnd", "");
+          openSoundPage();
+          savedMsg = "Chime sound: bell";
+        } else {
+          alarmFile = ""; prefs.putString("alSnd", "");
+          openClockPage();
+          savedMsg = "Alarm sound: beep";
+        }
+        savedMsgColor = C_OK; savedMsgUntil = millis() + 1500;
         return;
       }
       if (sdState == 1 || sdState == 3) sdConfirm = true;
@@ -4161,8 +4545,10 @@ void pressSd(int id) {
 }
 
 // closeSettings(): Leaves settings: saves the alarm, unmounts the card, back to the face.
+void saveSound();
 void closeSettings() {
   saveAlarm();
+  if (screen == SCREEN_SOUND) saveSound();
   sdUnmount();
   pressedBtn = B_NONE;
   screen = SCREEN_FACE;
@@ -4187,7 +4573,8 @@ void setClockTo(int h, int m) {
 bool isArrow(int id) {
   return id == B_TH_UP || id == B_TH_DN || id == B_TM_UP || id == B_TM_DN ||
          id == B_AH_UP || id == B_AH_DN || id == B_AM_UP || id == B_AM_DN ||
-         id == B_N_UP || id == B_N_DN || id == B_VDN || id == B_VUP;
+         id == B_N_UP || id == B_N_DN || id == B_VDN || id == B_VUP ||
+         id == B_C_VDN || id == B_C_VUP || id == B_QF_UP || id == B_QF_DN || id == B_QT_UP || id == B_QT_DN;
 }
 
 // pressSettings(): Clock page buttons.
@@ -4224,7 +4611,7 @@ void pressSettings(int id) {
       prefs.putInt("alVol", alarmVol);
       volChangedAt = millis();           // three beeps once you stop tapping
       break;
-    case B_SOUND: pressedBtn = B_NONE; openSoundPicker(); return;
+    case B_SOUND: pressedBtn = B_NONE; openSoundPicker(false); return;
     case B_FACE:                         // next clock face
       faceStyle = (faceStyle + 1) % N_FACES;
       prefs.putInt("face", faceStyle);
@@ -4623,6 +5010,24 @@ void handleCommand(String in) {
     prefs.putInt("alH", alarmH); prefs.putInt("alM", alarmM); prefs.putBool("alOn", alarmOn);
     Out.printf("Alarm %02d:%02d %s\n", alarmH, alarmM, alarmOn ? "ON" : "OFF");
     updateClock(true);
+  } else if (lower == "chime" || lower.startsWith("chime ")) {
+    String a = lower.substring(5); a.trim();
+    int f, t, v;
+    if (a == "on" || a == "off") { chimeOn = (a == "on"); prefs.putBool("chOn", chimeOn); }
+    else if (a == "test") { endChime(); startChime(); }
+    else if (a.startsWith("vol") && sscanf(a.c_str() + 3, "%d", &v) == 1) {
+      chimeVol = constrain(v, 0, 100); prefs.putInt("chVol", chimeVol);
+    }
+    else if (a == "quiet on" || a == "quiet off") { quietOn = (a == "quiet on"); prefs.putBool("chQt", quietOn); }
+    else if (sscanf(a.c_str(), "quiet %d-%d", &f, &t) == 2 && f >= 0 && f < 24 && t >= 0 && t < 24) {
+      quietFrom = f; quietTo = t; quietOn = true; saveSound(); prefs.putBool("chQt", true);
+    }
+    else if (a.length()) { Out.println("chime on|off|test | chime vol <0-100> | chime quiet on|off|HH-HH"); return; }
+    Out.printf("Chime %s, volume %d%%, sound %s, quiet hours %s %02d-%02d%s\n", chimeOn ? "ON" : "OFF", chimeVol,
+               chimeFile.length() ? chimeFile.c_str() : "bell", quietOn ? "ON" : "OFF", quietFrom, quietTo,
+               inQuietHours() ? " (quiet now)" : "");
+    if (screen == SCREEN_SOUND) renderSoundPage();
+    updateClock(true);
   } else if (lower == "demo") {
     struct tm t;
     if (!nowLocal(t)) { Out.println("No time yet"); return; }
@@ -4631,7 +5036,7 @@ void handleCommand(String in) {
     demoStart = millis();
     updateClock(true);
   } else {
-    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | face | bl <10-100> | alarm HH:MM|on|off|test | snd | demo | city | loc | wx | sd | orient | nest ...");
+    Out.println("ssid | pass | wifi | bt | sync | status | power | charge | chargev | face | bl <10-100> | alarm HH:MM|on|off|test | snd | chime | demo | city | loc | wx | sd | orient | nest ...");
   }
 }
 
@@ -4679,6 +5084,12 @@ void setup() {
   alarmOn     = prefs.getBool("alOn", false);
   alarmFile   = prefs.getString("alSnd", "");
   alarmVol    = constrain(prefs.getInt("alVol", 80), 0, 100);
+  chimeOn     = prefs.getBool("chOn", true);
+  chimeVol    = constrain(prefs.getInt("chVol", 50), 0, 100);
+  chimeFile   = prefs.getString("chSnd", "");
+  quietOn     = prefs.getBool("chQt", true);
+  quietFrom   = constrain(prefs.getInt("chQF", 22), 0, 23);
+  quietTo     = constrain(prefs.getInt("chQT", 7), 0, 23);
   nestProject = prefs.getString("nProj", "");
   nestClient  = prefs.getString("nCli", "");
   nestSecret  = prefs.getString("nSec", "");
@@ -4733,6 +5144,8 @@ void setup() {
   if (wifiOn) wifiStart(); else WiFi.mode(WIFI_OFF);
   if (btOn) bleStart();
   xTaskCreatePinnedToCore(nestTask, "nest", 12288, nullptr, 1, nullptr, 0);
+  struct tm t0;                          // no chime just for powering up at hh:00
+  if (nowLocal(t0)) lastChimeKey = t0.tm_yday * 24L + t0.tm_hour;
   updateClock(true);
 }
 
@@ -4780,15 +5193,17 @@ void loop() {
     if (key != lastAlarmKey) { lastAlarmKey = key; ringClockAlarm(false); }
   }
   if (alarmRinging && millis() - alarmStartMs >= alarmLimitMs) stopAlarm();
-  musicService();                        // keep the alarm music fed
+  musicService();                        // keep the alarm (or chime) music fed
+  chimeService();                        // hourly chime, Sound page TEST / volume preview
   // volume changed on the Clock page: three beeps 0.4 s after the last tap
   if (volChangedAt && millis() - volChangedAt > 400 && !alarmRinging && audioOk) {
     volChangedAt = 0;
+    endChime();                          // (the codec goes back to the alarm volume)
     if (alarmVol > 0) { ampOn(true); previewBeeps = 3; previewAmpUntil = millis() + 900; }
   }
   if (previewAmpUntil && millis() > previewAmpUntil && previewBeeps == 0) {
     previewAmpUntil = 0;
-    if (!alarmRinging) ampOn(false);
+    if (!alarmRinging && !chimeActive) ampOn(false);
   }
 
   // ---- 5. Nest: send an adjusted target 1.5 s after the last tap
@@ -4997,6 +5412,20 @@ void loop() {
     static int wxSeen = -1;                // lookup finished: show the result
     if (screen == SCREEN_WX && nestVersion != wxSeen) { wxSeen = nestVersion; renderWxPage(); }
     if (screen == SCREEN_WX && millis() - lastTouchMs > SETTINGS_IDLE_MS) slideSettingsClosed();
+  } else if (screen == SCREEN_SOUND) {
+    if (down) {
+      pressedBtn = hitTest(SNDBTNS, NSNDB, tx, ty);
+      pressStart = lastRepeat = millis();
+      if (pressedBtn != B_NONE) pressSound(pressedBtn);
+    } else if (tnow && isArrow(pressedBtn) && millis() - pressStart > 450 && millis() - lastRepeat > 110) {
+      lastRepeat = millis();
+      pressSound(pressedBtn);
+    } else if (!tnow && pressedBtn != B_NONE) {
+      saveSound();
+      pressedBtn = B_NONE;
+      if (screen == SCREEN_SOUND) renderSoundPage();
+    }
+    if (screen == SCREEN_SOUND && millis() - lastTouchMs > SETTINGS_IDLE_MS) slideSettingsClosed();
   } else if (screen == SCREEN_MENU) {
     if (down) {
       pressedBtn = hitTest(MBTNS, NMB, tx, ty);
@@ -5049,7 +5478,8 @@ void loop() {
   } else {
     static unsigned long lastRedraw = 0;
     static unsigned long lastStatus = 0;  // status pages: refresh each second
-    if ((screen == SCREEN_WIFI || screen == SCREEN_BT || screen == SCREEN_MENU || screen == SCREEN_DISP || screen == SCREEN_USB) &&
+    if ((screen == SCREEN_WIFI || screen == SCREEN_BT || screen == SCREEN_MENU || screen == SCREEN_DISP || screen == SCREEN_USB ||
+         screen == SCREEN_SOUND) &&
         millis() - lastStatus > (screen == SCREEN_USB ? 300UL : 1000UL)) {
       lastStatus = millis();
       redraw = true;
