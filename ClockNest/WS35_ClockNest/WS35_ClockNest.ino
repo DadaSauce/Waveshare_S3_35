@@ -5144,8 +5144,8 @@ void setup() {
   if (wifiOn) wifiStart(); else WiFi.mode(WIFI_OFF);
   if (btOn) bleStart();
   xTaskCreatePinnedToCore(nestTask, "nest", 12288, nullptr, 1, nullptr, 0);
-  struct tm t0;                          // no chime just for powering up at hh:00
-  if (nowLocal(t0)) lastChimeKey = t0.tm_yday * 24L + t0.tm_hour;
+  struct tm tb;                          // no chime just for powering up at hh:00
+  if (nowLocal(tb)) lastChimeKey = tb.tm_yday * 24L + tb.tm_hour;
   updateClock(true);
 }
 
