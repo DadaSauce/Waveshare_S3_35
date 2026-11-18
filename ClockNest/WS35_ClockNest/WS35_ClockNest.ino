@@ -18,8 +18,10 @@
                  (grey = off, lit = on and connected, red cross = on but not
                  connected / no paired phone), Nest under Wi-Fi (flame =
                  heating, snowflake = cooling, grey = idle / off)
-               chime note under Bluetooth (amber = hourly chime on, hollow
-                 grey = quiet hours now, none = chime off)
+               chime note (amber = hourly chime on, hollow grey = quiet
+                 hours now, none = chime off): jump hour = next to the alarm
+                 bell over the weekday, analog = under the Nest, digital =
+                 after the bell in the top row, sideways = under Bluetooth
                top right: battery - fill shows the charge (red < 10%,
                  yellow < 35%, green), lightning bolt while charging
                top center: a small handle - swipe down here for settings
@@ -663,7 +665,10 @@ void playMs(const int16_t* buf, int ms) {
 // ---- the built-in chime: a two-note bell, made once in PSRAM ----
 // Two bell notes (E6, then C6 0.55 s later), each a few overtones that die
 // away like a struck bell; 2.6 s, 48 kHz mono. Same sound as the Kindle Home
-// Hub's chime. Built by the beep task the first time it is needed (~0.3 s).
+// Hub's chime. Built by the beep task the first time it is needed.
+// Each overtone is a rotating phasor with a multiplying decay - no sinf/expf
+// per sample: calling those ~2 million times kept core 0 busy for seconds,
+// and the task watchdog reset the board.
 const int BELL_LEN = SAMPLE_RATE * 26 / 10;
 int16_t* bellPcm = nullptr;
 volatile bool chimeBell = false;         // the beep task is playing the bell (set by startChime)
@@ -676,15 +681,24 @@ void makeBell() {
   for (int i = 0; i < BELL_LEN; i++) acc[i] = 0;
   const float notes[2][2] = { { 0.0f, 1318.5f }, { 0.55f, 1046.5f } };       // start s, pitch Hz
   const float parts[4][2] = { { 1.0f, 1.0f }, { 2.0f, 0.35f }, { 2.76f, 0.18f }, { 5.4f, 0.06f } };
+  const float attack = SAMPLE_RATE * 0.004f;                  // 4 ms attack (no click)
   for (int n = 0; n < 2; n++) {
     int i0 = (int)(notes[n][0] * SAMPLE_RATE);
-    for (int i = i0; i < BELL_LEN; i++) {
-      float t = (float)(i - i0) / SAMPLE_RATE;
-      float env = expf(-t * 2.2f) * fminf(1.0f, t / 0.004f);   // 4 ms attack (no click), slow decay
-      float v = 0;
-      for (int p = 0; p < 4; p++)
-        v += parts[p][1] * expf(-t * parts[p][0] * 0.9f) * sinf(2 * PI * notes[n][1] * parts[p][0] * t);
-      acc[i] += v * env;
+    for (int p = 0; p < 4; p++) {
+      float w = 2 * PI * notes[n][1] * parts[p][0] / SAMPLE_RATE;
+      float cr = cosf(w), sr = sinf(w), c = 1, sn = 0;          // phasor: (c, sn) turns by w each sample
+      float amp = parts[p][1];
+      float dec = expf(-(2.2f + parts[p][0] * 0.9f) / SAMPLE_RATE);   // bell + overtone decay per sample
+      for (int i = i0; i < BELL_LEN && amp > 1e-5f; i++) {
+        int k = i - i0;
+        acc[i] += amp * sn * (k < attack ? k / attack : 1.0f);
+        amp *= dec;
+        float nc = c * cr - sn * sr;
+        sn = sn * cr + c * sr;
+        c = nc;
+        if ((k & 1023) == 1023) { float m = 1.0f / sqrtf(c * c + sn * sn); c *= m; sn *= m; }   // keep length 1
+      }
+      vTaskDelay(1);                                           // let the idle task run
     }
   }
   float peak = 0.001f;
@@ -1356,6 +1370,7 @@ const char* WD[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
 const char* MO[12] = { "JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC" };
 
 void drawAlarmBell(int cx, int cy, float sc, uint16_t c);   // (defined with the status icons)
+void drawChimeIcon(int cx, int cy, float sc);                // (defined with the status icons)
 bool ringBlink();                                            // (defined further down)
 
 // drawDate(): Weekday at the bottom left, day at the bottom right with the
@@ -1368,13 +1383,24 @@ void drawDate(const struct tm& t, bool known) {
   frame.setTextDatum(bottom_left);                       // weekday, bottom left
   const char* wd = known ? WD[t.tm_wday] : "---";
   frame.drawString(wd, 10, 236);
-  // alarm bell centered over the weekday's second letter
-  char c1[2] = { wd[0], 0 }, c2[2] = { wd[1], 0 };
-  int bx = 10 + frame.textWidth(c1) + frame.textWidth(c2) / 2;
   // vertically: halfway between the top line of the hour box and the top of the weekday
   int by = ((WIN_Y - WIN_PAD) + (236 - frame.fontHeight())) / 2;
-  if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, by, 1.2f, C_HOUR); }   // ringing: flash
-  else drawAlarmBell(bx, by, 1.0f, alarmOn ? C_HOUR : C_RADIO_OFF);
+  float isc = 1.0f;
+  int bx;
+  if (faceStyle == FACE_JUMP) {
+    // jump hour: alarm bell and chime note side by side, together as wide as
+    // "Wed" (the widest weekday), so they don't move from day to day
+    isc = 0.8f;
+    int span = frame.textWidth("Wed");
+    bx = 10 + (int)lroundf(11.5f * isc);                        // bell's left edge at the text's left
+    drawChimeIcon(10 + span - (int)lroundf(10 * isc), by, isc);   // note's flag at the end of "Wed"
+  } else {
+    // analog: the bell alone, centered over the weekday's second letter
+    char c1[2] = { wd[0], 0 }, c2[2] = { wd[1], 0 };
+    bx = 10 + frame.textWidth(c1) + frame.textWidth(c2) / 2;
+  }
+  if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, by, 1.2f * isc, C_HOUR); }   // ringing: flash
+  else drawAlarmBell(bx, by, isc, alarmOn ? C_HOUR : C_RADIO_OFF);
   frame.setTextDatum(bottom_right);                      // day, bottom right
   char b[4];
   snprintf(b, sizeof(b), "%02d", t.tm_mday);
@@ -1617,10 +1643,10 @@ void drawNoteGlyph(int cx, int cy, float sc, uint16_t c, bool hollow) {
 bool inQuietHours();
 // drawChimeIcon(): the hourly-chime status icon: amber note = chime on, hollow
 //   grey note = quiet hours right now, nothing = chime off.
-void drawChimeIcon(int cx, int cy) {
+void drawChimeIcon(int cx, int cy, float sc) {
   if (!chimeOn) return;
   bool q = inQuietHours();
-  drawNoteGlyph(cx, cy, 1.0f, q ? C_DIM : C_HOUR, q);
+  drawNoteGlyph(cx, cy, sc, q ? C_DIM : C_HOUR, q);
 }
 
 // drawRadioIcons(): Wi-Fi, Bluetooth and Nest status in the top-left corner.
@@ -1639,8 +1665,12 @@ void drawRadioIcons(bool oneRow) {
   else {
     drawNestIcon(wx, y + 34);            // thermostat status, under Wi-Fi (a third icon in the
                                          //   row would hit the dial's "15" label)
-    drawChimeIcon(bx, y + 34);           // hourly chime, under Bluetooth (the digital face
-  }                                      //   puts it after the alarm bell: drawFaceBell)
+    // hourly chime: analog = under the Nest; sideways = under Bluetooth; upright
+    // jump hour = next to the alarm bell over the weekday (drawDate); digital =
+    // after the bell in the top row (drawFaceBell)
+    if (isSideways()) drawChimeIcon(bx, y + 34, 1.0f);
+    else if (faceStyle == FACE_ANALOG) drawChimeIcon(wx, y + 68, 1.0f);
+  }
 }
 
 
@@ -2143,7 +2173,7 @@ void drawFaceBell() {
   int bx = nestConfigured() ? 118 : 86;  // (no Nest icon: take its place)
   if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, 24, 1.2f, C_HOUR); }
   else drawAlarmBell(bx, 24, 1.0f, alarmOn ? C_HOUR : C_RADIO_OFF);
-  drawChimeIcon(bx + 32, 22);            // the hourly chime's note, last in the row
+  drawChimeIcon(bx + 32, 22, 1.0f);      // the hourly chime's note, last in the row
 }
 
 // ============================================================================
