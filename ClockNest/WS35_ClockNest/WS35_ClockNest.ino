@@ -1396,7 +1396,9 @@ void drawDate(const struct tm& t, bool known) {
     float nsc = 20.0f / 23.0f;                                   // note: 23 px tall at scale 1
     isc = 20.0f / 26.0f;                                         // bell: 26 px tall, 23 wide at scale 1
     bx = 10 + (int)lroundf(11.5f * isc);
-    drawChimeIcon(10 + frame.textWidth("Tue") - (int)lroundf(9 * nsc), by, nsc);   // note spans cx-9..cx+9
+    int nx = (alarmOn || alarmRinging) ? 10 + frame.textWidth("Tue") - (int)lroundf(9 * nsc)
+                                       : 10 + (int)lroundf(9 * nsc);   // no bell: the note takes its place
+    drawChimeIcon(nx, by, nsc);                                  // (note spans cx-9..cx+9)
   } else {
     // analog: the bell alone, centered over the weekday's second letter
     char c1[2] = { wd[0], 0 }, c2[2] = { wd[1], 0 };
@@ -1681,7 +1683,7 @@ void drawRadioIcons(bool oneRow) {
   drawBtGlyph(btX, btY, ICON_SC_BT, btOn ? C_COOL : C_RADIO_OFF);
   if (btOn && !bleSecure) drawCross(btX, btY + 1, 10);
   drawNestIcon(nX, nY);
-  if (column) drawChimeIcon(wx, y + 3 * st, ICON_SC_NOTE);
+  if (column) drawChimeIcon(wx, y + (nestConfigured() ? 3 : 2) * st, ICON_SC_NOTE);   // no Nest: moves up
   else if (!oneRow && isSideways()) drawChimeIcon(wx + st, y + st, ICON_SC_NOTE);
 }
 
