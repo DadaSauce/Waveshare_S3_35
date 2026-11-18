@@ -17,7 +17,8 @@
     corners    top left: Wi-Fi and Bluetooth status icons
                  (grey = off, lit = on and connected, red cross = on but not
                  connected / no paired phone), Nest under Wi-Fi (flame =
-                 heating, snowflake = cooling, grey = idle / off)
+                 heating, snowflake = cooling, grey = idle / off); analog
+                 face: one column - Wi-Fi, Bluetooth, Nest, chime
                chime note (amber = hourly chime on, hollow grey = quiet
                  hours now, none = chime off): jump hour = next to the alarm
                  bell over the weekday, analog = under the Nest, digital =
@@ -1663,22 +1664,24 @@ void drawChimeIcon(int cx, int cy, float sc) {
 //   oneRow = true (digital face): the Nest icon goes in the top row too, right
 //   of Bluetooth, instead of under Wi-Fi.
 void drawRadioIcons(bool oneRow) {
-  const int y = ICON_Y0, wx = ICON_X0, bx = ICON_X0 + ICON_STEP;   // top-left corner: Wi-Fi, Bluetooth
+  const int y = ICON_Y0, wx = ICON_X0, st = ICON_STEP;
+  // where each icon goes (cell centres on the 34 px grid):
+  //   digital    one row:        Wi-Fi, BT, Nest (then bell + chime: drawFaceBell)
+  //   analog     one column:     Wi-Fi, BT, Nest, chime (upright only)
+  //   jump hour  2 x 2 corner:   Wi-Fi, BT / Nest (chime next to the alarm bell: drawDate);
+  //              a third icon in the top row would hit the dial's "15" label
+  //   sideways   2 x 2 corner:   Wi-Fi, BT / Nest, chime
+  bool column = (faceStyle == FACE_ANALOG && !isSideways());
+  int btX = column ? wx : wx + st, btY = column ? y + st : y;
+  int nX = oneRow ? wx + 2 * st : wx, nY = oneRow ? y : (column ? y + 2 * st : y + st);
   bool wConn = WiFi.status() == WL_CONNECTED;
   drawWifiGlyph(wx, y, ICON_SC_WIFI, wifiOn ? C_DATE : C_RADIO_OFF);
   if (wifiOn && !wConn) drawCross(wx, y + 1, 10);
-  drawBtGlyph(bx, y, ICON_SC_BT, btOn ? C_COOL : C_RADIO_OFF);
-  if (btOn && !bleSecure) drawCross(bx, y + 1, 10);
-  if (oneRow) drawNestIcon(wx + 2 * ICON_STEP, y);   // digital face: nothing in the way, all in one row
-  else {
-    drawNestIcon(wx, y + ICON_STEP);     // thermostat status, under Wi-Fi (a third icon in the
-                                         //   row would hit the dial's "15" label)
-    // hourly chime: analog = under the Nest; sideways = under Bluetooth; upright
-    // jump hour = next to the alarm bell over the weekday (drawDate); digital =
-    // after the bell in the top row (drawFaceBell)
-    if (isSideways()) drawChimeIcon(bx, y + ICON_STEP, ICON_SC_NOTE);
-    else if (faceStyle == FACE_ANALOG) drawChimeIcon(wx, y + 2 * ICON_STEP, ICON_SC_NOTE);
-  }
+  drawBtGlyph(btX, btY, ICON_SC_BT, btOn ? C_COOL : C_RADIO_OFF);
+  if (btOn && !bleSecure) drawCross(btX, btY + 1, 10);
+  drawNestIcon(nX, nY);
+  if (column) drawChimeIcon(wx, y + 3 * st, ICON_SC_NOTE);
+  else if (!oneRow && isSideways()) drawChimeIcon(wx + st, y + st, ICON_SC_NOTE);
 }
 
 
