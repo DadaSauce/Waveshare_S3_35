@@ -1388,12 +1388,13 @@ void drawDate(const struct tm& t, bool known) {
   float isc = 1.0f;
   int bx;
   if (faceStyle == FACE_JUMP) {
-    // jump hour: the width of "Wed" in thirds - bell | space | chime note,
-    // both 20 px tall, the same every day
-    float third = frame.textWidth("Wed") / 3.0f;
-    isc = 20.0f / 26.0f;                                         // bell: 26 px at scale 1
-    bx = 10 + (int)lroundf(third / 2);
-    drawChimeIcon(10 + (int)lroundf(2.5f * third), by, 20.0f / 23.0f);   // note: 23 px at scale 1
+    // jump hour: bell and chime note (20 px tall) across the width of "Tue":
+    // bell's left edge at the text's left, note's right edge at the end of
+    // "Tue" - the same every day
+    float nsc = 20.0f / 23.0f;                                   // note: 23 px tall at scale 1
+    isc = 20.0f / 26.0f;                                         // bell: 26 px tall, 23 wide at scale 1
+    bx = 10 + (int)lroundf(11.5f * isc);
+    drawChimeIcon(10 + frame.textWidth("Tue") - (int)lroundf(9 * nsc), by, nsc);   // note spans cx-9..cx+9
   } else {
     // analog: the bell alone, centered over the weekday's second letter
     char c1[2] = { wd[0], 0 }, c2[2] = { wd[1], 0 };
