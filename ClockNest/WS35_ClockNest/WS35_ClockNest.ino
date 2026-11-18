@@ -28,7 +28,7 @@
                  yellow < 35%, green), lightning bolt while charging
                top center: a small handle - swipe down here for settings
                bottom left: weekday, with the alarm bell above it
-                 (grey = alarm off, amber = on, flashing = ringing)
+                 (amber = on, flashing = ringing, none = alarm off)
                bottom right: day, with the month above it
     bottom     weather (now + today and 2 days) or the Nest thermostat - tap
     half       the WEATHER / NEST pill to switch. The Nest panel goes back to
@@ -1377,8 +1377,8 @@ bool ringBlink();                                            // (defined further
 
 // drawDate(): Weekday at the bottom left, day at the bottom right with the
 //   month above it - and the alarm bell, centered over the weekday's second
-//   letter, halfway up to the hour box (grey = off, amber = on, flashing while
-//   ringing).
+//   letter, halfway up to the hour box (amber = on, flashing while ringing, none =
+//   off). Jump hour: bell and chime note side by side instead (see below).
 void drawDate(const struct tm& t, bool known) {
   frame.setTextColor(C_DATE);
   frame.setFont(&fonts::DejaVu24);
@@ -1403,7 +1403,7 @@ void drawDate(const struct tm& t, bool known) {
     bx = 10 + frame.textWidth(c1) + frame.textWidth(c2) / 2;
   }
   if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, by, 1.2f * isc, C_HOUR); }   // ringing: flash
-  else drawAlarmBell(bx, by, isc, alarmOn ? C_HOUR : C_RADIO_OFF);
+  else if (alarmOn) drawAlarmBell(bx, by, isc, C_HOUR);       // alarm off: no bell
   frame.setTextDatum(bottom_right);                      // day, bottom right
   char b[4];
   snprintf(b, sizeof(b), "%02d", t.tm_mday);
@@ -2182,13 +2182,15 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
 }
 
 // drawFaceBell(): The alarm bell for the digital face, last in the top row of
-//   icons (after Wi-Fi, Bluetooth and the Nest): grey = off, amber = on,
-//   flashing while it rings - as on the other faces.
+//   icons (after Wi-Fi, Bluetooth and the Nest): amber = on, flashing while it
+//   rings, nothing when the alarm is off - then the chime note moves up into
+//   its place.
 void drawFaceBell() {
   int bx = ICON_X0 + (nestConfigured() ? 3 : 2) * ICON_STEP;   // (no Nest icon: take its place)
+  bool bell = alarmOn || alarmRinging;
   if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, ICON_Y0, 1.2f * ICON_SC_BELL, C_HOUR); }
-  else drawAlarmBell(bx, ICON_Y0, ICON_SC_BELL, alarmOn ? C_HOUR : C_RADIO_OFF);
-  drawChimeIcon(bx + ICON_STEP, ICON_Y0, ICON_SC_NOTE);   // the hourly chime's note, last in the row
+  else if (alarmOn) drawAlarmBell(bx, ICON_Y0, ICON_SC_BELL, C_HOUR);
+  drawChimeIcon(bell ? bx + ICON_STEP : bx, ICON_Y0, ICON_SC_NOTE);   // the hourly chime's note, last in the row
 }
 
 // ============================================================================
