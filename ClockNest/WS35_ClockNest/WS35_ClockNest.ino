@@ -4344,8 +4344,6 @@ void renderSoundPage() {
   frame.setTextDatum(middle_left);
   frame.drawString("HOURLY CHIME", 22, 86);
   drawSndToggle(B_C_ON, chimeOn);
-  frame.setFont(&fonts::DejaVu12);
-  frame.drawString("VOLUME", 22, 134);
   const Btn* b = findBtn(SNDBTNS, NSNDB, B_C_VDN);
   drawPageBtn(b->x, b->y, b->w, b->h, B_C_VDN, "-", C_PANEL, TFT_WHITE, true);
   b = findBtn(SNDBTNS, NSNDB, B_C_VUP);
@@ -4376,6 +4374,7 @@ void renderSoundPage() {
   frame.drawString("QUIET HOURS", 22, 288);
   drawSndToggle(B_Q_ON, quietOn);
   frame.setFont(&fonts::DejaVu12);
+  frame.setTextColor(C_LABEL);           // (the toggle left its own text colour set)
   frame.setTextDatum(middle_center);
   frame.drawString("FROM", 80, 318);
   frame.drawString("TO", 240, 318);
