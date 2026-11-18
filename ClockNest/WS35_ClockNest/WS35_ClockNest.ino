@@ -58,7 +58,7 @@
                send the same commands as the Serial Monitor
     SD Card    info, browse, format (FAT32), USB DRIVE (card appears on the
                computer as a disk)
-    Sound      hourly chime ON/OFF, chime volume (1% steps, separate from the
+    Sound      hourly chime ON/OFF, chime volume (5% steps, separate from the
                alarm's), TEST, chime sound (tap: a file on the SD card, or
                the built-in two-note bell); QUIET HOURS ON/OFF, FROM / TO
                hour (no chime from FROM:00 until TO:00)
@@ -433,7 +433,7 @@ unsigned long alarmStartMs = 0, alarmLimitMs = 15000;
 long lastAlarmKey = -1;
 // hourly chime (Settings > Sound) - see the CHIME section
 bool chimeOn = true;                     // "chOn"
-int  chimeVol = 50;                      // "chVol", %, 1% steps (the alarm has its own)
+int  chimeVol = 50;                      // "chVol", %, 5% steps (the alarm has its own)
 String chimeFile;                        // "chSnd": a file on the SD card ("" = built-in bell)
 bool quietOn = true;                     // "chQt"
 int  quietFrom = 22, quietTo = 7;        // "chQF" / "chQT": no chime from 22:00 until 07:00
@@ -1388,12 +1388,12 @@ void drawDate(const struct tm& t, bool known) {
   float isc = 1.0f;
   int bx;
   if (faceStyle == FACE_JUMP) {
-    // jump hour: alarm bell and chime note side by side, together as wide as
-    // "Wed" (the widest weekday), so they don't move from day to day
-    isc = 0.8f;
-    int span = frame.textWidth("Wed");
-    bx = 10 + (int)lroundf(11.5f * isc);                        // bell's left edge at the text's left
-    drawChimeIcon(10 + span - (int)lroundf(10 * isc), by, isc);   // note's flag at the end of "Wed"
+    // jump hour: the width of "Wed" in thirds - bell | space | chime note,
+    // both 20 px tall, the same every day
+    float third = frame.textWidth("Wed") / 3.0f;
+    isc = 20.0f / 26.0f;                                         // bell: 26 px at scale 1
+    bx = 10 + (int)lroundf(third / 2);
+    drawChimeIcon(10 + (int)lroundf(2.5f * third), by, 20.0f / 23.0f);   // note: 23 px at scale 1
   } else {
     // analog: the bell alone, centered over the weekday's second letter
     char c1[2] = { wd[0], 0 }, c2[2] = { wd[1], 0 };
@@ -1601,6 +1601,13 @@ void drawSnowGlyph(int cx, int cy, float sc, uint16_t c) {
   }
 }
 
+// STATUS ICON GRID: every status icon is scaled so its longer side is 24 px
+// (ICON_SC_*) and centred in a 24 x 24 cell; cells are ICON_STEP = 34 px
+// apart across and down (a 10 px gap), starting at (22, 22).
+const int ICON_STEP = 34, ICON_X0 = 22, ICON_Y0 = 22;
+const float ICON_SC_WIFI = 0.94f, ICON_SC_BT = 1.09f, ICON_SC_NEST = 1.09f,
+            ICON_SC_BELL = 0.92f, ICON_SC_NOTE = 1.04f;
+
 // drawNestIcon(): Thermostat status under the Wi-Fi icon (nothing if the Nest
 //   isn't set up):
 //     orange flame      heating right now
@@ -1620,8 +1627,8 @@ void drawNestIcon(int cx, int cy) {
   bool off = !strcmp(n.mode, "OFF");
   bool snow = cooling || (!heating && !strcmp(n.mode, "COOL"));
   uint16_t c = heating ? C_HEAT : cooling ? C_COOL : (!ok || off) ? C_RADIO_OFF : C_LABEL;
-  if (snow) drawSnowGlyph(cx, cy, 1.0f, c);
-  else      drawFlameGlyph(cx, cy, 1.0f, c);
+  if (snow) drawSnowGlyph(cx, cy, ICON_SC_NEST, c);
+  else      drawFlameGlyph(cx, cy, ICON_SC_NEST, c);
   if (!ok) drawCross(cx, cy + 1, 10);
 }
 
@@ -1646,7 +1653,7 @@ bool inQuietHours();
 void drawChimeIcon(int cx, int cy, float sc) {
   if (!chimeOn) return;
   bool q = inQuietHours();
-  drawNoteGlyph(cx, cy, sc, q ? C_DIM : C_HOUR, q);
+  drawNoteGlyph(cx - (int)lroundf(sc), cy + (int)lroundf(sc), sc, q ? C_DIM : C_HOUR, q);   // (glyph's centre is 1 px up-right of cx, cy)
 }
 
 // drawRadioIcons(): Wi-Fi, Bluetooth and Nest status in the top-left corner.
@@ -1655,21 +1662,21 @@ void drawChimeIcon(int cx, int cy, float sc) {
 //   oneRow = true (digital face): the Nest icon goes in the top row too, right
 //   of Bluetooth, instead of under Wi-Fi.
 void drawRadioIcons(bool oneRow) {
-  const int y = 22, wx = 22, bx = 54;                   // top-left corner: Wi-Fi, Bluetooth
+  const int y = ICON_Y0, wx = ICON_X0, bx = ICON_X0 + ICON_STEP;   // top-left corner: Wi-Fi, Bluetooth
   bool wConn = WiFi.status() == WL_CONNECTED;
-  drawWifiGlyph(wx, y, 1.0f, wifiOn ? C_DATE : C_RADIO_OFF);
+  drawWifiGlyph(wx, y, ICON_SC_WIFI, wifiOn ? C_DATE : C_RADIO_OFF);
   if (wifiOn && !wConn) drawCross(wx, y + 1, 10);
-  drawBtGlyph(bx, y, 1.0f, btOn ? C_COOL : C_RADIO_OFF);
+  drawBtGlyph(bx, y, ICON_SC_BT, btOn ? C_COOL : C_RADIO_OFF);
   if (btOn && !bleSecure) drawCross(bx, y + 1, 10);
-  if (oneRow) drawNestIcon(86, y);       // digital face: nothing in the way, all in one row
+  if (oneRow) drawNestIcon(wx + 2 * ICON_STEP, y);   // digital face: nothing in the way, all in one row
   else {
-    drawNestIcon(wx, y + 34);            // thermostat status, under Wi-Fi (a third icon in the
+    drawNestIcon(wx, y + ICON_STEP);     // thermostat status, under Wi-Fi (a third icon in the
                                          //   row would hit the dial's "15" label)
     // hourly chime: analog = under the Nest; sideways = under Bluetooth; upright
     // jump hour = next to the alarm bell over the weekday (drawDate); digital =
     // after the bell in the top row (drawFaceBell)
-    if (isSideways()) drawChimeIcon(bx, y + 34, 1.0f);
-    else if (faceStyle == FACE_ANALOG) drawChimeIcon(wx, y + 68, 1.0f);
+    if (isSideways()) drawChimeIcon(bx, y + ICON_STEP, ICON_SC_NOTE);
+    else if (faceStyle == FACE_ANALOG) drawChimeIcon(wx, y + 2 * ICON_STEP, ICON_SC_NOTE);
   }
 }
 
@@ -2170,10 +2177,10 @@ void drawDigitalFace(bool land, const struct tm& t, bool known) {
 //   icons (after Wi-Fi, Bluetooth and the Nest): grey = off, amber = on,
 //   flashing while it rings - as on the other faces.
 void drawFaceBell() {
-  int bx = nestConfigured() ? 118 : 86;  // (no Nest icon: take its place)
-  if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, 24, 1.2f, C_HOUR); }
-  else drawAlarmBell(bx, 24, 1.0f, alarmOn ? C_HOUR : C_RADIO_OFF);
-  drawChimeIcon(bx + 32, 22, 1.0f);      // the hourly chime's note, last in the row
+  int bx = ICON_X0 + (nestConfigured() ? 3 : 2) * ICON_STEP;   // (no Nest icon: take its place)
+  if (alarmRinging) { if (ringBlink()) drawAlarmBell(bx, ICON_Y0, 1.2f * ICON_SC_BELL, C_HOUR); }
+  else drawAlarmBell(bx, ICON_Y0, ICON_SC_BELL, alarmOn ? C_HOUR : C_RADIO_OFF);
+  drawChimeIcon(bx + ICON_STEP, ICON_Y0, ICON_SC_NOTE);   // the hourly chime's note, last in the row
 }
 
 // ============================================================================
@@ -2213,8 +2220,8 @@ void renderLandscapeClock(float handDeg, int sec, int hFrom, int hTo, float roll
   drawRadioIcons(faceStyle == FACE_DIGITAL);   // same top-left spot as upright
   drawBattery(W - 46);                   // top right
   if (faceStyle == FACE_DIGITAL) drawFaceBell();                              // last in the icon row
-  else if (alarmRinging) { if (ringBlink()) drawAlarmBell(90, 24, 1.2f, C_HOUR); }   // ringing: flash
-  else if (alarmOn) drawAlarmBell(90, 24, 1.0f, C_HOUR);                     // alarm set
+  else if (alarmRinging) { if (ringBlink()) drawAlarmBell(ICON_X0 + 2 * ICON_STEP, ICON_Y0, 1.2f * ICON_SC_BELL, C_HOUR); }
+  else if (alarmOn) drawAlarmBell(ICON_X0 + 2 * ICON_STEP, ICON_Y0, ICON_SC_BELL, C_HOUR);   // alarm set
   frame.pushSprite(0, 0);
 }
 
@@ -4404,13 +4411,13 @@ void saveSound() {
   prefs.putInt("chQT", quietTo);
 }
 
-// pressSound(): Sound page buttons. Every arrow / - + moves one unit (1 hour, 1%).
+// pressSound(): Sound page buttons. Arrows move 1 hour; volume - / + move 5%.
 void pressSound(int id) {
   switch (id) {
     case B_BACK: saveSound(); pressedBtn = B_NONE; openSettings(); return;
     case B_C_ON: chimeOn = !chimeOn; prefs.putBool("chOn", chimeOn); break;
-    case B_C_VDN: chimeVol = max(0, chimeVol - 1); chimeVolChangedAt = millis(); break;
-    case B_C_VUP: chimeVol = min(100, chimeVol + 1); chimeVolChangedAt = millis(); break;
+    case B_C_VDN: chimeVol = max(0, (chimeVol + 4) / 5 * 5 - 5); chimeVolChangedAt = millis(); break;
+    case B_C_VUP: chimeVol = min(100, chimeVol / 5 * 5 + 5); chimeVolChangedAt = millis(); break;
     case B_C_TEST: if (chimeActive) endChime(); else startChime(); break;
     case B_C_SND: saveSound(); endChime(); pressedBtn = B_NONE; openSoundPicker(true); return;
     case B_Q_ON: quietOn = !quietOn; prefs.putBool("chQt", quietOn); break;
